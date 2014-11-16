@@ -18,27 +18,9 @@ import time
 # Sample rate can be 12,14, 16 or 18
 adc = ADCPi(0x68, 0x69, 18)
 
-def writetofile(texttowrtite):
-	f = open('adclog.txt', 'a')
-	f.write(str(datetime.datetime.now()) + " " + texttowrtite)
-	f.closed
-
-while (True):
-
-
-  # read from adc channels and write to the log file
-#  writetofile ("Channel 1: %02f\n" % adc.readVoltage(1))
-#  writetofile ("Channel 2: %02f\n" % adc.readVoltage(2))
-#  writetofile ("Channel 3: %02f\n" % adc.readVoltage(3))
-#  writetofile ("Channel 4: %02f\n" % adc.readVoltage(4))
-#  writetofile ("Channel 5: %02f\n" % adc.readVoltage(5))
-#  writetofile ("Channel 6: %02f\n" % adc.readVoltage(6))
-  rv = adc.readRaw(8)
-  print ("Pressure Sensor(raw): 0x%0x" % rv)
-  print ("Pressure Sensor(raw): {0:016b}").format(rv)
-  print ("Pressure Sensor: %04fV" % adc.readVoltage(8))
-  #print ("RPi Supply Voltage: %02f\n" % adc.readVoltage(8))
-
- 
-  # wait 1 second before reading the pins again
-  time.sleep(1)
+rv = adc.readRaw(8)
+#print ("Pressure Sensor(raw): 0x%0x" % rv)
+#print ("Pressure Sensor(raw): {0:016b}").format(rv)
+print ("%04f" % adc.readVoltage(8))
+#print ("Pressure Sensor: %04fV" % adc.readVoltage(8))
+#print ("RPi Supply Voltage: %02f\n" % adc.readVoltage(7))
