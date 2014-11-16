@@ -3,6 +3,9 @@
 from ABElectronics_ADCPi import ADCPi
 import datetime
 import time
+import signal
+import sys
+import math
 
 # ================================================
 # Based on
@@ -13,14 +16,28 @@ import time
 # run with: python tanklevel.py
 # ================================================
 
+# Setup to gracefully catch ^C and exit
+def signal_handler(signal, frame):
+        print rawReadings
+        print('\nExiting')
+        sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
 
 # Initialise the ADC device using the default addresses and sample rate, change this value if you have changed the address selection jumpers
 # Sample rate can be 12,14, 16 or 18
 adc = ADCPi(0x68, 0x69, 18)
 
-#rv = adc.readRaw(8)
-#print ("Pressure Sensor(raw): 0x%0x" % rv)
-#print ("Pressure Sensor(raw): {0:016b}").format(rv)
-print ("%04f" % adc.readVoltage(8))
-#print ("Pressure Sensor: %04fV" % adc.readVoltage(8))
-#print ("RPi Supply Voltage: %02f\n" % adc.readVoltage(7))
+# Initialise the raw readings array
+rawReadings = [] 
+currentIndex = 0
+
+while True:
+  v = adc.readVoltage(8)
+  if len(rawReadings) > 60:
+    rawReadings[currentIndex] = v
+  else :
+    rawReadings.append(v)
+  #print ("Current: %04f" % v)
+  a = math.fsum(rawReadings)/len(rawReadings)
+  print ("{:04f},{:04f}".format(a,v))
