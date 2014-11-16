@@ -18,7 +18,7 @@ import time
 # Sample rate can be 12,14, 16 or 18
 adc = ADCPi(0x68, 0x69, 18)
 
-rv = adc.readRaw(8)
+#rv = adc.readRaw(8)
 #print ("Pressure Sensor(raw): 0x%0x" % rv)
 #print ("Pressure Sensor(raw): {0:016b}").format(rv)
 print ("%04f" % adc.readVoltage(8))
