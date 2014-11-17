@@ -80,10 +80,6 @@ rt = RepeatedTimer(args.period, emit, rawReadings)
 try:
   while True:
     v = adc.readVoltage(args.adcChannel)
-    #if average == 0: 
-    #  print ("{},{:.4f}".format(str(datetime.datetime.utcnow()),average))
-    #  average = v
-    # When we get more than nsamples entries, truncate the oldest one
     if len(rawReadings) >= args.nsamples:
       del rawReadings[0]
     rawReadings.append(v)
