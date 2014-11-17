@@ -57,19 +57,23 @@ class RepeatedTimer(object):
         self.is_running = False
 
 # Emit the current datetime and sample average
-def emit(rawReadings):
-  a = math.fsum(rawReadings)/len(rawReadings)
-  print ("{},{:04f}".format(str(datetime.datetime.utcnow()),a))
+def emit(a):
+  # a = math.fsum(rawReadings)/len(rawReadings)
+  print ("{},{:.4f}".format(str(datetime.datetime.utcnow()),a))
 
 # Initialise the raw readings array
 rawReadings = [] 
-timerNotStarted = True
+average = 0
+debug = True
 
-rt = RepeatedTimer(60, emit, rawReadings)
+rt = RepeatedTimer(60, emit, average)
 
 try:
   while True:
     v = adc.readVoltage(8)
+    if debug and len(rawReadings) > 0 : 
+      a = math.fsum(rawReadings)/len(rawReadings)
+      print >> sys.stderr, "{:.4f},{:.4f}".format(v,a)
     if len(rawReadings) > 60:
       del rawReadings[0]
     rawReadings.append(v)
