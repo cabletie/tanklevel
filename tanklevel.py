@@ -6,6 +6,15 @@ import signal
 import sys
 import math
 from threading import Timer
+import argparse
+
+# Parse arguments
+parser = argparse.ArgumentParser()
+parser.add_argument("-d", "--debug", help="Turn on debugging to stderr", action="store_true")
+parser.add_argument("-p", "--period", help="Time period  between readings in seconds", type=int, default=60)
+parser.add_argument("-n", "--nsamples", help="Number of samples to average over", type=int, default=60)
+parser.add_argument("-c", "--adcChannel", help="ADC Channel", type=int, default=8)
+args = parser.parse_args()
 
 # ================================================
 # Based on
@@ -19,6 +28,7 @@ from threading import Timer
 # Setup to gracefully catch ^C and exit
 def signal_handler(signal, frame):
 	print >> sys.stderr, rawReadings
+	print >> sys.stderr, '\n', average
         print >> sys.stderr,'\nExiting'
         sys.exit(0)
 
@@ -57,25 +67,31 @@ class RepeatedTimer(object):
         self.is_running = False
 
 # Emit the current datetime and sample average
-def emit(a):
-  # a = math.fsum(rawReadings)/len(rawReadings)
-  print ("{},{:.4f}".format(str(datetime.datetime.utcnow()),a))
+def emit(rawReadings):
+  average = math.fsum(rawReadings)/len(rawReadings)
+  print ("{},{:.4f}".format(str(datetime.datetime.utcnow()),average))
 
 # Initialise the raw readings array
 rawReadings = [] 
 average = 0
-debug = True
 
-rt = RepeatedTimer(60, emit, average)
+rt = RepeatedTimer(args.period, emit, rawReadings)
 
 try:
   while True:
-    v = adc.readVoltage(8)
-    if debug and len(rawReadings) > 0 : 
-      a = math.fsum(rawReadings)/len(rawReadings)
-      print >> sys.stderr, "{:.4f},{:.4f}".format(v,a)
-    if len(rawReadings) > 60:
+    v = adc.readVoltage(args.adcChannel)
+    #if average == 0: 
+    #  print ("{},{:.4f}".format(str(datetime.datetime.utcnow()),average))
+    #  average = v
+    # When we get more than nsamples entries, truncate the oldest one
+    if len(rawReadings) >= args.nsamples:
       del rawReadings[0]
     rawReadings.append(v)
+    if len(rawReadings) > 0 : 
+      average = math.fsum(rawReadings)/len(rawReadings)
+    if args.debug: 
+      print >> sys.stderr, "{:.4f},{:.4f}".format(v,average)
+    if len(rawReadings) == 1:
+      print ("{},{:.4f}".format(str(datetime.datetime.utcnow()),average))
 finally:
   rt.stop()
