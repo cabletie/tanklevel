@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+export PYTHONPATH=/home/peter/src/ABElectronics_Python_Libraries/ABElectronics_ADCPi/
+#while true
+#do
+./tanklevel.py
+#done
