@@ -14,6 +14,7 @@ parser.add_argument("-d", "--debug", help="Turn on debugging to stderr", action=
 parser.add_argument("-p", "--period", help="Time period  between readings in seconds", type=int, default=60)
 parser.add_argument("-n", "--nsamples", help="Number of samples to average over", type=int, default=60)
 parser.add_argument("-c", "--adcChannel", help="ADC Channel", type=int, default=8)
+parser.add_argument("-f", "--datafile", help="file to log data to", default="rawdata.csv")
 args = parser.parse_args()
 
 # ================================================
@@ -27,6 +28,7 @@ args = parser.parse_args()
 
 # Setup to gracefully catch ^C and exit
 def signal_handler(signal, frame):
+	df.close()
 	print >> sys.stderr, rawReadings
 	print >> sys.stderr, '\n', average
         print >> sys.stderr,'\nExiting'
@@ -69,12 +71,18 @@ class RepeatedTimer(object):
 # Emit the current datetime and sample average
 def emit(rawReadings):
   average = math.fsum(rawReadings)/len(rawReadings)
-  print ("{},{:.4f}".format(str(datetime.datetime.utcnow()),average))
+  df.write("{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcChannel))
 
 # Initialise the raw readings array
 rawReadings = [] 
 average = 0
 
+try:
+  df = open(args.datafile, "a", 1)
+except:
+  print >> sys.stderr, "Failed to open args.datafile for writing\n"
+  sys.exit(1)
+  
 rt = RepeatedTimer(args.period, emit, rawReadings)
 
 try:
@@ -88,6 +96,7 @@ try:
     if args.debug: 
       print >> sys.stderr, "{:.4f},{:.4f}".format(v,average)
     if len(rawReadings) == 1:
-      print ("{},{:.4f}".format(str(datetime.datetime.utcnow()),average))
+      df.write("{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcChannel))
 finally:
+  df.close()
   rt.stop()
