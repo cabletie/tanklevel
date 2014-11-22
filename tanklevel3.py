@@ -26,6 +26,8 @@ parser.add_argument("-t", "--test", help="Run in test mode - uses random data", 
 parser.add_argument("-g", "--debugport", help="Port to provide debug output (every reading)", type=int, default=10001)
 parser.add_argument("-o", "--port", help="Port to provide main output (gives latest reading and disconnects)", type=int, default=10000)
 
+args = parser.parse_args()
+
 tableName = "adcpiv2"
 
 con = sqlite3.connect(args.dbname)
@@ -127,32 +129,34 @@ server_main_address = ('localhost', args.port)
 print >>sys.stderr, 'starting up on %s port %s' % server_main_address
 main_server.bind(server_main_address)
 
-# Listen for incoming connections
+# Listen for incoming connections on the two ports
 debug_server.listen(5)
 main_server.listen(5)
 
 # Sockets from which we expect to read
-inputs = [ debug_server main_server ]
+inputs = [ debug_server, main_server ]
 
 # Sockets to which we expect to write
 outputs = [ ]
 
-# Keep track of one record only sockets
+# Keep track of one-record-only sockets
 main_outputs = [ ]
 
 # Outgoing message queues (socket:Queue)
 message_queues = {}
 
 last_df_write = ""
-while inputs:
 
-    # Wait for at least one of the sockets to be ready for processing
-    # or timeout of 1 second
-    print >>sys.stderr, '\nwaiting for the next event'
-    readable, writable, exceptional = select.select(inputs, outputs, inputs, 1)
-    if not (readable or writable or exceptional):
-        print >>sys.stderr, '   timed out, go collect some data'
-        try:
+try:
+    while inputs:
+
+        # Wait for at least one of the sockets to be ready for processing
+        # or timeout of 1 second
+        print >>sys.stderr, 'waiting for the next event'
+        readable, writable, exceptional = select.select(inputs, outputs, inputs, 1)
+        if not (readable or writable or exceptional):
+            # Main data collection loop
+            print >>sys.stderr, '   timed out, go collect some data'
             if args.test:
                 v = uniform(0.4,5.05)
                 time.sleep(1)
@@ -165,69 +169,87 @@ while inputs:
                 average = math.fsum(rawReadings)/len(rawReadings)
             if args.debug: 
                 print >> sys.stderr, "{:.4f},{:.4f}".format(v,average)
+            # Handle feeding data to main_outputs
+            for s in outputs:
+                try:
+                    message_queues[s].put("{:.4f},{:.4f}".format(v,average))
+                except:
+                    # No messages waiting so stop checking for writability.
+                    print >>sys.stderr, 'no debug outputs to feed'
+        else:
             if len(rawReadings) == 1:
                 last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
                 df.write(last_df_write)
-        finally:
-            df.close()
-            rt.stop()
-        continue
+            continue # go back to "while inputs:"
 
-    # Handle inputs
-    for s in readable:
-        if s is debug_server:
-            # A "readable" debug_server socket is ready to accept a connection
-            connection, client_address = s.accept()
-            print >>sys.stderr, 'debug server new connection from', client_address
-            connection.setblocking(0)
+        # Select gave us something to do
+        # Handle inputs
+        for s in readable:
+            if s is debug_server:
+                # A "readable" debug_server socket is ready to accept a connection
+                connection, client_address = s.accept()
+                print >>sys.stderr, 'debug server new connection from', client_address
+                connection.setblocking(0)
 
-            # Give the connection a queue for data we want to send
-            message_queues[connection] = Queue.Queue()
-        else if s is main_server:
-            # A "readable" main_server socket is ready to accept a connection
-            connection, client_address = s.accept()
-            print >>sys.stderr, 'main server new connection from', client_address
-            connection.setblocking(0)
+                # Give the connection a queue for data we want to send
+                message_queues[connection] = Queue.Queue()
+            else:
+                if s is main_server:
+                    # A "readable" main_server socket is ready to accept a connection
+                    connection, client_address = s.accept()
+                    print >>sys.stderr, 'main server new connection from', client_address
+                    connection.setblocking(0)
 
-            # Give the connection a queue for data we want to send
-            message_queues[connection] = Queue.Queue()
-	    # Immediately put last record into send buffor for sending to this connection
-            message_queues[connection].put(last_df_write)
-	    # Add this connection to the list of outputs to service
-	    outputs.append(connection)
-	    # Add this connection to the list of one-message-only outputs to service
-	    main_outputs.append(connection)
-        else:
-            data = s.recv(1024)
-            if data:
-                # A readable client socket has data
-                print >>sys.stderr, 'received "%s" from %s (ignored)' % (data, s.getpeername())
-    # Handle outputs
-    for s in writable:
-        try:
-            next_msg = message_queues[s].get_nowait()
-        except Queue.Empty:
-            # No messages waiting so stop checking for writability.
-            print >>sys.stderr, 'output queue for', s.getpeername(), 'is empty'
-            outputs.remove(s)
-        else:
-            print >>sys.stderr, 'sending "%s" to %s' % (next_msg, s.getpeername())
-            s.send(next_msg)
-	    # If this is a once only connection, remove from output lists and close
-            if s in main_outputs:
-                inputs.remove(s)
+                    # Give the connection a queue for data we want to send
+                    message_queues[connection] = Queue.Queue()
+            	    # Immediately put last record into send buffor for sending to this connection
+                    message_queues[connection].put(last_df_write)
+            	    # Add this connection to the list of outputs to service
+            	    outputs.append(connection)
+            	    # Add this connection to the list of one-message-only outputs to service
+            	    main_outputs.append(connection)
+                else:
+                    data = s.recv(1024)
+                    if data:
+                        # A readable client socket has data
+                        print >>sys.stderr, 'received "%s" from %s (ignored)' % (data, s.getpeername())
+
+        # Handle outputs
+        for s in writable:
+            try:
+                next_msg = message_queues[s].get_nowait()
+            except Queue.Empty:
+                # No messages waiting so stop checking for writability.
+                print >>sys.stderr, 'output queue for', s.getpeername(), 'is empty'
                 outputs.remove(s)
-                main_outputs.remove(s)
-                s.close()
-    # Handle "exceptional conditions"
-    for s in exceptional:
-        print >>sys.stderr, 'handling exceptional condition for', s.getpeername()
-        # Stop listening for input on the connection
-        inputs.remove(s)
-        if s in outputs:
-            outputs.remove(s)
-        s.close()
+            else:
+                print >>sys.stderr, 'sending "%s" to %s' % (next_msg, s.getpeername())
+                s.send(next_msg)
+    	    # If this is a once only connection, remove from output lists and close
+                if s in main_outputs:
+                    inputs.remove(s)
+                    outputs.remove(s)
+                    main_outputs.remove(s)
+                    s.close()
 
-        # Remove message queue
-        del message_queues[s]
+        # Handle "exceptional conditions"
+        for s in exceptional:
+            print >>sys.stderr, 'handling exceptional condition for', s.getpeername()
+            # Stop listening for input on the connection
+            inputs.remove(s)
+            if s in outputs:
+                outputs.remove(s)
+            s.close()
+
+            # Remove message queue
+            del message_queues[s]
+
+# We got a ^C - close up shop cleanly
+finally:
+    for s in inputs:
+        s.close()
+    for s in outputs:
+        s.close()
+    df.close()
+    rt.stop()
 
