@@ -96,9 +96,11 @@ class RepeatedTimer(object):
         self.is_running = False
 
 # Emit the current datetime and sample average
+last_df_write = ""
 def emit(rawReadings):
-  average = math.fsum(rawReadings)/len(rawReadings)
-  df.write("{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel))
+    average = math.fsum(rawReadings)/len(rawReadings)
+    last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
+    df.write(last_df_write)
 
 # Initialise the raw readings array
 rawReadings = [] 
@@ -145,7 +147,6 @@ main_outputs = [ ]
 # Outgoing message queues (socket:Queue)
 message_queues = {}
 
-last_df_write = ""
 
 try:
     while inputs:
@@ -154,35 +155,49 @@ try:
         # or timeout of 1 second
         print >>sys.stderr, 'waiting for the next event'
         readable, writable, exceptional = select.select(inputs, outputs, inputs, 1)
-        if not (readable or writable or exceptional):
-            # Main data collection loop
-            print >>sys.stderr, '   timed out, go collect some data'
-            if args.test:
-                v = uniform(0.4,5.05)
-                time.sleep(1)
-            else:
-                v = adc.readVoltage(args.adcchannel)
-            if len(rawReadings) >= args.nsamples:
-                del rawReadings[0]
-            rawReadings.append(v)
-            if len(rawReadings) > 0 : 
-                average = math.fsum(rawReadings)/len(rawReadings)
-            if args.debug: 
-                print >> sys.stderr, "{:.4f},{:.4f}".format(v,average)
-            # Handle feeding data to main_outputs
-            for s in outputs:
-                try:
-                    message_queues[s].put("{:.4f},{:.4f}".format(v,average))
-                except:
-                    # No messages waiting so stop checking for writability.
-                    print >>sys.stderr, 'no debug outputs to feed'
+
+        # Main data collection loop
+        if args.test:
+            v = uniform(0.4,5.05)
+            time.sleep(1)
         else:
-            if len(rawReadings) == 1:
-                last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
-                df.write(last_df_write)
+            v = adc.readVoltage(args.adcchannel)
+        if len(rawReadings) >= args.nsamples:
+            del rawReadings[0]
+        rawReadings.append(v)
+        if len(rawReadings) > 0 : 
+            average = math.fsum(rawReadings)/len(rawReadings)
+        if args.debug: 
+            print >> sys.stderr, "{:.4f},{:.4f}".format(v,average)
+
+        # Handle feeding data to main_outputs
+        if outputs:
+            for s in outputs:
+                message_queues[s].put("{:.4f},{:.4f}\n".format(v,average))
+
+        # Write out the first data point we get
+        if len(rawReadings) == 1:
+            last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
+            df.write(last_df_write)
+
+        if not (readable or writable or exceptional):
             continue # go back to "while inputs:"
 
         # Select gave us something to do
+        print >>sys.stderr, '   Select gave us something to do'
+
+        # Handle "exceptional conditions"
+        for s in exceptional:
+            print >>sys.stderr, 'handling exceptional condition for', s.getpeername()
+            # Stop listening for input on the connection
+            inputs.remove(s)
+            if s in outputs:
+                outputs.remove(s)
+            s.close()
+
+            # Remove message queue
+            del message_queues[s]
+
         # Handle inputs
         for s in readable:
             if s is debug_server:
@@ -193,6 +208,9 @@ try:
 
                 # Give the connection a queue for data we want to send
                 message_queues[connection] = Queue.Queue()
+
+                # Add this connection queue to the list of outputs to service
+                outputs.append(connection)
             else:
                 if s is main_server:
                     # A "readable" main_server socket is ready to accept a connection
@@ -219,30 +237,28 @@ try:
             try:
                 next_msg = message_queues[s].get_nowait()
             except Queue.Empty:
-                # No messages waiting so stop checking for writability.
                 print >>sys.stderr, 'output queue for', s.getpeername(), 'is empty'
-                outputs.remove(s)
+                # No messages waiting so stop checking for writability.
+                #print >>sys.stderr, 'output queue for', s.getpeername(), 'is empty'
+                #outputs.remove(s)
             else:
-                print >>sys.stderr, 'sending "%s" to %s' % (next_msg, s.getpeername())
-                s.send(next_msg)
-    	    # If this is a once only connection, remove from output lists and close
-                if s in main_outputs:
-                    inputs.remove(s)
-                    outputs.remove(s)
-                    main_outputs.remove(s)
+                try:
+                    print >>sys.stderr, 'sending "%s" to %s' % (next_msg, s.getpeername())
+                    s.send(next_msg)
+	           # If this is a once only connection, remove from output lists and close
+                    if s in main_outputs:
+                        inputs.remove(s)
+                        outputs.remove(s)
+                        main_outputs.remove(s)
+                        s.close()
+                except:
+                    print >>sys.stderr, 'closing failed socket connection'                    
+                    if s in inputs:
+                        inputs.remove(s)
+                    if s in outputs:
+                        outputs.remove(s)
                     s.close()
 
-        # Handle "exceptional conditions"
-        for s in exceptional:
-            print >>sys.stderr, 'handling exceptional condition for', s.getpeername()
-            # Stop listening for input on the connection
-            inputs.remove(s)
-            if s in outputs:
-                outputs.remove(s)
-            s.close()
-
-            # Remove message queue
-            del message_queues[s]
 
 # We got a ^C - close up shop cleanly
 finally:
