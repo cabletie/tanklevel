@@ -12,14 +12,17 @@ import select
 import socket
 from random import random, uniform
 import Queue
+import os
+import csv
 
 # Parse arguments
 parser = argparse.ArgumentParser()
 parser.add_argument("-d", "--debug", help="Turn on debugging to stderr", action="store_true")
-parser.add_argument("-p", "--period", help="Time period  between readings in seconds", type=int, default=60)
+parser.add_argument("-p", "--period", help="Time period  between when average readings are emitted (seconds)", type=int, default=60)
 parser.add_argument("-n", "--nsamples", help="Number of samples to average over", type=int, default=60)
 parser.add_argument("-c", "--adcchannel", help="ADC Channel", type=int, default=7)
-parser.add_argument("-f", "--datafile", help="file to log data to", default="adcpiv2.csv")
+parser.add_argument("-f", "--datafile", help="csv file to log data to", default="adcpiv2.csv")
+parser.add_argument("-s", "--histfile", help="existing csv file with history data to load", default="adcpiv2.csv")
 parser.add_argument("-b", "--dbname", help="sqlite3 database file to log data to", default="adcpiv2.db")
 parser.add_argument("-i", "--init", help="initialise sqlite3 database", action="store_true")
 parser.add_argument("-t", "--test", help="Run in test mode - uses random data", action="store_true")
@@ -29,36 +32,41 @@ parser.add_argument("-o", "--port", help="Port to provide main output (gives lat
 args = parser.parse_args()
 
 tableName = "adcpiv2"
+tmpTableName = "tmptable"
 
 con = sqlite3.connect(args.dbname)
 
 # If we've been asked to initialise database
 if args.init: 
-  with con:
-    cur = con.cursor()
-    cur.executescript("""
-          DROP TABLE IF EXISTS adcpiv2;
-          DROP TABLE IF EXISTS tmpTable;
-          CREATE TABLE IF NOT EXISTS adcpiv2(Id INTEGER PRIMARY KEY AUTOINCREMENT, DateTime CHAR(32), Voltage FLOAT,AdcChannel INT);
-          CREATE TABLE IF NOT EXISTS tmpTable(DateTime CHAR(32), Voltage FLOAT,AdcChannel INT);
-          """)
-    if os.path.isfile(args.datafile) and os.access(args.datafile, os.R_OK):
-      # Open and read the csv into the tmpTable
-      reader = csv.reader(open(args.datafile, 'r'), delimiter=',')
-      for row in reader:
-        to_db = [unicode(row[0], "utf8"), unicode(row[1], "utf8"), unicode(row[2], "utf8")]
-        cur.execute("INSERT INTO tmpTable(DateTime, Voltage, AdcChannel) VALUES (?, ?, ?);", to_db)
-      # Intert the whole tmpTable into the real table, this time allowing sqlite3 to add the AUTOINCREMENT Id field
-      cur.execute("INSERT INTO adcpiv2(DateTime, Voltage, AdcChannel) SELECT * FROM tmpTable;")
-    else:
-      print >> sys.stderr, "Datafile not found or not readable, creating empty database\n"
-
+    with con:
+        cur = con.cursor()
+        sqlScript = """
+            DROP TABLE IF EXISTS {tablename};
+            DROP TABLE IF EXISTS {tmptablename};
+            CREATE TABLE IF NOT EXISTS {tablename}(Id INTEGER PRIMARY KEY AUTOINCREMENT, DateTime CHAR(32), Voltage FLOAT,AdcChannel INT);
+            CREATE TABLE IF NOT EXISTS {tmptablename}(DateTime CHAR(32), Voltage FLOAT,AdcChannel INT);
+            """.format(tablename=tableName,tmptablename=tmpTableName)
+        cur.executescript(sqlScript)
+        if os.path.isfile(args.datafile) and os.access(args.datafile, os.R_OK):
+            # Open and read the csv into the tmpTable
+            reader = csv.reader(open(args.histfile, 'r'), delimiter=',')
+            for row in reader:
+                to_db = [unicode(row[0], "utf8"), unicode(row[1], "utf8"), unicode(row[2], "utf8")]
+                cur.execute("INSERT INTO {tmptablename}(DateTime, Voltage, AdcChannel) VALUES (?, ?, ?);".format(tmptablename=tmpTableName), to_db)
+            # Insert the whole tmpTable into the real table, this time allowing sqlite3 to add the AUTOINCREMENT Id field
+            cur.execute("INSERT INTO {tablename}(DateTime, Voltage, AdcChannel) SELECT * FROM {tmptablename};".format(tablename=tableName,tmptablename=tmpTableName))
+            print >> sys.stderr, "Inserted {} rows.".format(cur.rowcount)
+        else:
+            print >> sys.stderr, "Datafile ({}) not found or not readable, creating empty database\n".format(args.histfile)
+    # Finished doing db init and loading
+    con.close()
+  
 # Setup to gracefully catch ^C and exit
 def signal_handler(signal, frame):
 	df.close()
 	print >> sys.stderr, rawReadings
-	print >> sys.stderr, '\n', average
-        print >> sys.stderr,'\nExiting'
+	print >> sys.stderr, average
+        print >> sys.stderr,'Exiting'
         sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -78,6 +86,7 @@ class RepeatedTimer(object):
         self.args       = args
         self.kwargs     = kwargs
         self.is_running = False
+        self.con        = None
         self.start()
 
     def _run(self):
@@ -90,21 +99,29 @@ class RepeatedTimer(object):
             self._timer = Timer(self.interval, self._run)
             self._timer.start()
             self.is_running = True
+            self.con = sqlite3.connect(args.dbname)
 
     def stop(self):
         self._timer.cancel()
         self.is_running = False
 
+# Initialise the raw readings array and initial average value
+rawReadings = [] 
+average = 0
+
 # Emit the current datetime and sample average
 last_df_write = ""
 def emit(rawReadings):
     average = math.fsum(rawReadings)/len(rawReadings)
-    last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
-    df.write(last_df_write)
-
-# Initialise the raw readings array
-rawReadings = [] 
-average = 0
+    sampleTime = str(datetime.datetime.now())
+    last_df_write = "{},{:.4f},{}\n".format(sampleTime,average,args.adcchannel)
+    df.write(last_df_write) 
+    with rt.con:
+        cur = rt.con.cursor()
+        sqlScript = "INSERT INTO {}(DateTime, Voltage, AdcChannel) VALUES ('{}', {:.4f}, {});".format(tmpTableName,sampleTime,average,args.adcchannel)
+        print >> sys.stderr, "Executing SQL: {}".format(sqlScript)
+        cur.execute(sqlScript)
+#    print >> sys.stderr, "Wrote {},{},{} to database\n".format(sampleTime,average,args.adcchannel)
 
 try:
   df = open(args.datafile, "a", 1)
@@ -151,19 +168,19 @@ message_queues = {}
 try:
     while inputs:
 
-        # Wait for at least one of the sockets to be ready for processing
-        # or timeout of 1 second
-        print >>sys.stderr, 'waiting for the next event'
-        readable, writable, exceptional = select.select(inputs, outputs, inputs, 1)
-
         # Main data collection loop
+        # Generate a random value if in test mode, otherwise read current data from adc
         if args.test:
             v = uniform(0.4,5.05)
-            time.sleep(1)
+            #time.sleep(1)
         else:
             v = adc.readVoltage(args.adcchannel)
+
+        # Delet the oldest sample if we have nsamples or more
         if len(rawReadings) >= args.nsamples:
             del rawReadings[0]
+
+        # Append the newest reading to the array
         rawReadings.append(v)
         if len(rawReadings) > 0 : 
             average = math.fsum(rawReadings)/len(rawReadings)
@@ -177,8 +194,17 @@ try:
 
         # Write out the first data point we get
         if len(rawReadings) == 1:
+#### Might neeed to change this to grab most recent db entry and send that instead
+            # Generate the string so we can use to send to TCP ports if/when needed
             last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
+            # Write out to datafile
             df.write(last_df_write)
+
+        # Wait for at least one of the sockets to be ready for processing
+        # or timeout of 1 second
+        # We really only ever expect connection requests
+        print >>sys.stderr, 'waiting for the next event'
+        readable, writable, exceptional = select.select(inputs, outputs, inputs, 1)
 
         if not (readable or writable or exceptional):
             continue # go back to "while inputs:"
@@ -242,23 +268,28 @@ try:
                 #print >>sys.stderr, 'output queue for', s.getpeername(), 'is empty'
                 #outputs.remove(s)
             else:
-                try:
-                    print >>sys.stderr, 'sending "%s" to %s' % (next_msg, s.getpeername())
+#                try:
+                    print >>sys.stderr, 'sending "{}" to {}'.format(next_msg, s.getpeername())
                     s.send(next_msg)
 	           # If this is a once only connection, remove from output lists and close
                     if s in main_outputs:
-                        inputs.remove(s)
+                        print >> sys.stderr, s.getsockname()
+                        print >>sys.stderr, 'closing main_server socket connection on port {}'.format(s.getsockname())
+#                        inputs.remove(s)
                         outputs.remove(s)
                         main_outputs.remove(s)
                         s.close()
-                except:
-                    print >>sys.stderr, 'closing failed socket connection'                    
-                    if s in inputs:
-                        inputs.remove(s)
-                    if s in outputs:
-                        outputs.remove(s)
-                    s.close()
-
+#                except:
+#gotta figure this bit out - why am I getting this path executed?
+#                    print >>sys.stderr, 'closing failed socket connection'                    
+#                    if s in inputs:
+#                        inputs.remove(s)
+#                    if s in outputs:
+#                        outputs.remove(s)
+#                    s.close()
+    # end while inputs
+    print >>sys.stderr, 'no more input sockets to process - exiting.'                    
+    
 
 # We got a ^C - close up shop cleanly
 finally:
