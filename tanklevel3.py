@@ -14,22 +14,63 @@ from random import random, uniform
 import Queue
 import os
 import csv
+import logging
+
+if os.name != "nt":
+    import fcntl
+    import struct
+    def get_interface_ip(ifname):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        return socket.inet_ntoa(fcntl.ioctl(
+                s.fileno(),
+                0x8915,  # SIOCGIFADDR
+                struct.pack('256s', ifname[:15])
+            )[20:24])
+
+def get_lan_ip():
+    ip = socket.gethostbyname(socket.gethostname())
+    if ip.startswith("127.") and os.name != "nt":
+        interfaces = ["eth0","eth1","eth2","wlan0","wlan1","wifi0","ath0","ath1","ppp0"]
+        for ifname in interfaces:
+            try:
+                ip = get_interface_ip(ifname)
+                break;
+            except IOError:
+                pass
+    return ip
 
 # Parse arguments
 parser = argparse.ArgumentParser()
 parser.add_argument("-d", "--debug", help="Turn on debugging to stderr", action="store_true")
-parser.add_argument("-p", "--period", help="Time period  between when average readings are emitted (seconds)", type=int, default=60)
+parser.add_argument("-l", "--loglevel", help="Set logging level DEBUG,INFO,WARNING,ERROR,CRITICAL", 
+    default='INFO', choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'])
+parser.add_argument("-e", "--logfile", help="File to log system messages", default="adcpiv2.log")
+parser.add_argument("-p", "--period", help="Time period  between when average readings are emitted (seconds)", 
+    type=int, default=60)
 parser.add_argument("-n", "--nsamples", help="Number of samples to average over", type=int, default=60)
-parser.add_argument("-c", "--adcchannel", help="ADC Channel", type=int, default=7)
+parser.add_argument("-c", "--adcchannel", help="ADC Channel", type=int, default=8)
 parser.add_argument("-f", "--datafile", help="csv file to log data to", default="adcpiv2.csv")
 parser.add_argument("-s", "--histfile", help="existing csv file with history data to load", default="adcpiv2.csv")
 parser.add_argument("-b", "--dbname", help="sqlite3 database file to log data to", default="adcpiv2.db")
 parser.add_argument("-i", "--init", help="initialise sqlite3 database", action="store_true")
 parser.add_argument("-t", "--test", help="Run in test mode - uses random data", action="store_true")
 parser.add_argument("-g", "--debugport", help="Port to provide debug output (every reading)", type=int, default=10001)
-parser.add_argument("-o", "--port", help="Port to provide main output (gives latest reading and disconnects)", type=int, default=10000)
+parser.add_argument("-o", "--port", help="Port to provide main output (gives latest reading and disconnects)", 
+    type=int, default=10000)
+parser.add_argument("-a", "--bindaddress", help="IP Address to bind to", default=get_lan_ip())
 
 args = parser.parse_args()
+
+numeric_level = getattr(logging, args.loglevel.upper(), None)
+if not isinstance(numeric_level, int):
+    raise ValueError('Invalid log level: %s' % loglevel)
+
+logging.basicConfig(filename=args.logfile,
+#logging.basicConfig(
+    format='%(asctime)s %(filename)s %(process)s %(levelname)s %(message)s',
+    level=numeric_level)
+
+logging.info('Starting')
 
 tableName = "adcpiv2"
 tmpTableName = "tmptable"
@@ -37,7 +78,8 @@ tmpTableName = "tmptable"
 con = sqlite3.connect(args.dbname)
 
 # If we've been asked to initialise database
-if args.init: 
+if args.init:
+    logging.info('Initialising db') 
     with con:
         cur = con.cursor()
         sqlScript = """
@@ -55,24 +97,25 @@ if args.init:
                 cur.execute("INSERT INTO {tmptablename}(DateTime, Voltage, AdcChannel) VALUES (?, ?, ?);".format(tmptablename=tmpTableName), to_db)
             # Insert the whole tmpTable into the real table, this time allowing sqlite3 to add the AUTOINCREMENT Id field
             cur.execute("INSERT INTO {tablename}(DateTime, Voltage, AdcChannel) SELECT * FROM {tmptablename};".format(tablename=tableName,tmptablename=tmpTableName))
-            print >> sys.stderr, "Inserted {} rows.".format(cur.rowcount)
+            logging.info("Inserted {} rows.".format(cur.rowcount))
         else:
-            print >> sys.stderr, "Datafile ({}) not found or not readable, creating empty database\n".format(args.histfile)
+            logging.error("Datafile ({}) not found or not readable, creating empty database\n".format(args.histfile))
     # Finished doing db init and loading
     con.close()
+    logging.info('Done initialising database')
   
 # Setup to gracefully catch ^C and exit
 def signal_handler(signal, frame):
     rt.stop()
     df.close()
-    print >> sys.stderr, rawReadings
-    print >> sys.stderr, average
+    logging.debug("current raw readings: {:s}",rawReadings)
+    logging.debug("Current average: {}",average)
     for s in inputs:
         s.close()
     for s in outputs:
         s.close()
 
-    print >> sys.stderr,'Exiting'
+    logging.info('Got SIGINT - Exiting')
     sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -118,24 +161,26 @@ average = 0
 # Emit the current datetime and sample average
 last_df_write = ""
 def emit(rawReadings):
+    logging.debug('Emitting current data to db')
     average = math.fsum(rawReadings)/len(rawReadings)
     sampleTime = str(datetime.datetime.now())
     last_df_write = "{},{:.4f},{}\n".format(sampleTime,average,args.adcchannel)
     df.write(last_df_write) 
     with rt.con:
         cur = rt.con.cursor()
-        sqlScript = "INSERT INTO {}(DateTime, Voltage, AdcChannel) VALUES ('{}', {:.4f}, {});".format(tmpTableName,sampleTime,average,args.adcchannel)
-        print >> sys.stderr, "Executing SQL: {}".format(sqlScript)
+        sqlScript = "INSERT INTO {}(DateTime, Voltage, AdcChannel) VALUES ('{}', {:.4f}, {});".format(tableName,sampleTime,average,args.adcchannel)
+        logging.debug("Executing SQL: {}".format(sqlScript))
         cur.execute(sqlScript)
 #    print >> sys.stderr, "Wrote {},{},{} to database\n".format(sampleTime,average,args.adcchannel)
 
 try:
   df = open(args.datafile, "a", 1)
 except:
-  print >> sys.stderr, "Failed to open args.datafile for writing\n"
+  logging.error("Failed to open {} for writing",args.datafile)
   sys.exit(1)
   
 # Save current average reading to database once per period
+logging.info('Initialising emit timer at {:d} seconds'.format(args.period))
 rt = RepeatedTimer(args.period, emit, rawReadings)
 
 # Create a TCP/IP sockets, on efor main server, one for debug server
@@ -145,14 +190,24 @@ main_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 main_server.setblocking(0)
 
 # Bind the socket to the port
-server_debug_address = ('localhost', args.debugport)
-print >>sys.stderr, 'starting up debug on %s port %s' % server_debug_address
-debug_server.bind(server_debug_address)
+server_debug_address = (args.bindaddress, args.debugport)
+logging.info('starting up debug server on {} port {}'.format(*server_debug_address))
+try:
+    debug_server.bind(server_debug_address)
+except socket.error:
+    logging.error('Failed to bind to debug socket - Quitting')
+    df.close()
+    sys.exit(1)
 
 # Bind the socket to the port
-server_main_address = ('localhost', args.port)
-print >>sys.stderr, 'starting up on %s port %s' % server_main_address
-main_server.bind(server_main_address)
+server_main_address = (args.bindaddress, args.port)
+logging.info('starting up main server on {} port {}'.format(*server_main_address))
+try:
+    main_server.bind(server_main_address)
+except socket.error:
+    logging.error('Failed to bind to main socket - Quitting')
+    df.close()
+    sys.exit(1)
 
 # Listen for incoming connections on the two ports
 debug_server.listen(5)
@@ -170,6 +225,7 @@ main_outputs = [ ]
 # Outgoing message queues (socket:Queue)
 message_queues = {}
 
+logging.debug('Starting main loop')
 
 try:
     while inputs:
@@ -209,18 +265,18 @@ try:
         # Wait for at least one of the sockets to be ready for processing
         # or timeout of 1 second
         # We really only ever expect connection requests
-        print >>sys.stderr, 'waiting for the next event'
+        logging.debug('waiting for the next event')
         readable, writable, exceptional = select.select(inputs, outputs, inputs, 1)
 
         if not (readable or writable or exceptional):
             continue # go back to "while inputs:"
 
         # Select gave us something to do
-        print >>sys.stderr, '   Select gave us something to do'
+        logging.debug('   Select gave us something to do')
 
         # Handle "exceptional conditions"
         for s in exceptional:
-            print >>sys.stderr, 'handling exceptional condition for', s.getpeername()
+            logging.debug('handling exceptional condition for {}', s.getpeername())
             # Stop listening for input on the connection
             inputs.remove(s)
             if s in outputs:
@@ -235,7 +291,7 @@ try:
             if s is debug_server:
                 # A "readable" debug_server socket is ready to accept a connection
                 connection, client_address = s.accept()
-                print >>sys.stderr, 'debug server new connection from', client_address
+                logging.info('debug server new connection from {}:{}'.format(*client_address))
                 connection.setblocking(0)
 
                 # Give the connection a queue for data we want to send
@@ -247,7 +303,7 @@ try:
                 if s is main_server:
                     # A "readable" main_server socket is ready to accept a connection
                     connection, client_address = s.accept()
-                    print >>sys.stderr, 'main server new connection from', client_address
+                    logging.debug('main server new connection from {}:{}'.format(*client_address))
                     connection.setblocking(0)
 
                     # Give the connection a queue for data we want to send
@@ -262,43 +318,47 @@ try:
                     data = s.recv(1024)
                     if data:
                         # A readable client socket has data
-                        print >>sys.stderr, 'received "%s" from %s (ignored)' % (data, s.getpeername())
+                        logging.debug('received "{}" from {}:{} (ignored)',data, *s.getpeername())
 
         # Handle outputs
         for s in writable:
             try:
                 next_msg = message_queues[s].get_nowait()
             except Queue.Empty:
-                print >>sys.stderr, 'output queue for', s.getpeername(), 'is empty'
+                pn = s.getpeername()
+                logging.info('output queue for {}:{} is empty'.format(*pn))
                 # No messages waiting so stop checking for writability.
                 #print >>sys.stderr, 'output queue for', s.getpeername(), 'is empty'
                 #outputs.remove(s)
             else:
                 try:
-                    print >>sys.stderr, 'sending "{}" to {}'.format(next_msg, s.getpeername())
+                    pn = s.getpeername()
+                    logging.debug('sending "{}" to {}:{}'.format(next_msg, *pn))
                     s.send(next_msg)
 	           # If this is a once only connection, remove from output lists and close
                     if s in main_outputs:
-                        print >> sys.stderr, s.getsockname()
-                        print >>sys.stderr, 'closing main_server socket connection on port {}'.format(s.getsockname())
+                        sn = s.getsockname()
+                        logging.debug('closing main_server socket connection on port {}:{}'.format(*sn))
 #                        inputs.remove(s)
                         outputs.remove(s)
                         main_outputs.remove(s)
                         s.close()
                 except:
 #gotta figure this bit out - why am I getting this path executed?
-                    print >>sys.stderr, 'closing failed socket connection: {}'.format(s.getsockname)
+                    sn = s.getsockname()
+                    logging.info('Connection reset by peer: {}:{}'.format(*sn))
                     if s in inputs:
                         inputs.remove(s)
                     if s in outputs:
                         outputs.remove(s)
                     s.close()
     # end while inputs
-    print >>sys.stderr, 'no more input sockets to process - exiting.'                    
+    logging.warning('no more input sockets to process - exiting.')
     
 
 # We got a ^C - close up shop cleanly
 finally:
+    logging.info('Cleaning up and Exiting - Bye')
     for s in inputs:
         s.close()
     for s in outputs:
