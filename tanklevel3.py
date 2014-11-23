@@ -63,11 +63,17 @@ if args.init:
   
 # Setup to gracefully catch ^C and exit
 def signal_handler(signal, frame):
-	df.close()
-	print >> sys.stderr, rawReadings
-	print >> sys.stderr, average
-        print >> sys.stderr,'Exiting'
-        sys.exit(0)
+    rt.stop()
+    df.close()
+    print >> sys.stderr, rawReadings
+    print >> sys.stderr, average
+    for s in inputs:
+        s.close()
+    for s in outputs:
+        s.close()
+
+    print >> sys.stderr,'Exiting'
+    sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
 
@@ -172,7 +178,7 @@ try:
         # Generate a random value if in test mode, otherwise read current data from adc
         if args.test:
             v = uniform(0.4,5.05)
-            #time.sleep(1)
+            time.sleep(1)
         else:
             v = adc.readVoltage(args.adcchannel)
 
@@ -268,7 +274,7 @@ try:
                 #print >>sys.stderr, 'output queue for', s.getpeername(), 'is empty'
                 #outputs.remove(s)
             else:
-#                try:
+                try:
                     print >>sys.stderr, 'sending "{}" to {}'.format(next_msg, s.getpeername())
                     s.send(next_msg)
 	           # If this is a once only connection, remove from output lists and close
@@ -279,14 +285,14 @@ try:
                         outputs.remove(s)
                         main_outputs.remove(s)
                         s.close()
-#                except:
+                except:
 #gotta figure this bit out - why am I getting this path executed?
-#                    print >>sys.stderr, 'closing failed socket connection'                    
-#                    if s in inputs:
-#                        inputs.remove(s)
-#                    if s in outputs:
-#                        outputs.remove(s)
-#                    s.close()
+                    print >>sys.stderr, 'closing failed socket connection: {}'.format(s.getsockname)
+                    if s in inputs:
+                        inputs.remove(s)
+                    if s in outputs:
+                        outputs.remove(s)
+                    s.close()
     # end while inputs
     print >>sys.stderr, 'no more input sockets to process - exiting.'                    
     
