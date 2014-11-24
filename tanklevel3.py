@@ -244,23 +244,25 @@ try:
 
         # Append the newest reading to the array
         rawReadings.append(v)
+
+        # If we have more than zero readings, calculate average and update output string
         if len(rawReadings) > 0 : 
             average = math.fsum(rawReadings)/len(rawReadings)
-        if args.debug: 
-            print >> sys.stderr, "{:.4f},{:.4f}".format(v,average)
+            last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
+            logging.debug("{:.4f},{:.4f}".format(v,average))
 
-        # Handle feeding data to main_outputs
+        # Handle feeding data to debug_outputs
         if outputs:
             for s in outputs:
                 message_queues[s].put("{:.4f},{:.4f}\n".format(v,average))
 
-        # Write out the first data point we get
-        if len(rawReadings) == 1:
-#### Might neeed to change this to grab most recent db entry and send that instead
-            # Generate the string so we can use to send to TCP ports if/when needed
-            last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
-            # Write out to datafile
-            df.write(last_df_write)
+#         # Write out the first data point we get
+#         if len(rawReadings) == 1:
+# #### Might neeed to change this to grab most recent db entry and send that instead
+#             # Generate the string so we can use to send to TCP ports if/when needed
+#             last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
+#             # Write out to datafile
+#             df.write(last_df_write)
 
         # Wait for at least one of the sockets to be ready for processing
         # or timeout of 1 second
@@ -339,7 +341,6 @@ try:
                     if s in main_outputs:
                         sn = s.getsockname()
                         logging.debug('closing main_server socket connection on port {}:{}'.format(*sn))
-#                        inputs.remove(s)
                         outputs.remove(s)
                         main_outputs.remove(s)
                         s.close()
