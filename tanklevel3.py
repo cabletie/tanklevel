@@ -15,6 +15,7 @@ import Queue
 import os
 import csv
 import logging
+import configparser
 
 if os.name != "nt":
     import fcntl
@@ -46,9 +47,9 @@ parser.add_argument("-l", "--loglevel", help="Set logging level DEBUG,INFO,WARNI
     default='INFO', choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'])
 parser.add_argument("-e", "--logfile", help="File to log system messages", default="adcpiv2.log")
 parser.add_argument("-p", "--period", help="Time period  between when average readings are emitted (seconds)", 
-    type=int, default=60)
+    type=int, default=300)
 parser.add_argument("-n", "--nsamples", help="Number of samples to average over", type=int, default=60)
-parser.add_argument("-c", "--adcchannel", help="ADC Channel", type=int, default=8)
+parser.add_argument("-h", "--adcchannel", help="ADC Channel", type=int, default=8)
 parser.add_argument("-f", "--datafile", help="csv file to log data to", default="adcpiv2.csv")
 parser.add_argument("-s", "--histfile", help="existing csv file with history data to load", default="adcpiv2.csv")
 parser.add_argument("-b", "--dbname", help="sqlite3 database file to log data to", default="adcpiv2.db")
@@ -58,15 +59,34 @@ parser.add_argument("-g", "--debugport", help="Port to provide debug output (eve
 parser.add_argument("-o", "--port", help="Port to provide main output (gives latest reading and disconnects)", 
     type=int, default=10000)
 parser.add_argument("-a", "--bindaddress", help="IP Address to bind to", default=get_lan_ip())
+parser.add_argument("-c", "--config", help="Use this config file", default='tanklevel.ini')
 
 args = parser.parse_args()
+
+# Parse Config file
+channelZero = {}
+channelNames = {}
+
+def isChannelSection(sectionName):
+    return re.match('ch\d',sectionName)
+
+config = ConfigParser.ConfigParser()
+logging.info('Reading config file: {}'.format(args.config))
+try:
+    config.read(args.config)
+    #    channels = [i for i in config.sections() if re.match('ch\d',i)]
+    for s in filter(isChannelSection,config.sections()):
+        channelZero[s] = c.get(s,'Zero')
+        channelNames[s] = c.get(s,'Name')
+except:
+    logging.error('Error reading config file: {}'.format(args.config))
+
 
 numeric_level = getattr(logging, args.loglevel.upper(), None)
 if not isinstance(numeric_level, int):
     raise ValueError('Invalid log level: %s' % loglevel)
 
 logging.basicConfig(filename=args.logfile,
-#logging.basicConfig(
     format='%(asctime)s %(filename)s %(process)s %(levelname)s %(message)s',
     level=numeric_level)
 
@@ -74,6 +94,7 @@ logging.info('Starting')
 
 tableName = "adcpiv2"
 tmpTableName = "tmptable"
+#channelstablename = "channels"
 
 con = sqlite3.connect(args.dbname)
 
@@ -82,6 +103,8 @@ if args.init:
     logging.info('Initialising db') 
     with con:
         cur = con.cursor()
+        #            DROP TABLE IF EXISTS {channelstablename};
+        #            CREATE TABLE IF NOT EXISTS {channelstablename}(Id INT, Name CHAR(32), Address INT, Zero INT, Span INT, Convert INT, Units CHAR(32));
         sqlScript = """
             DROP TABLE IF EXISTS {tablename};
             DROP TABLE IF EXISTS {tmptablename};
@@ -99,23 +122,24 @@ if args.init:
             cur.execute("INSERT INTO {tablename}(DateTime, Voltage, AdcChannel) SELECT * FROM {tmptablename};".format(tablename=tableName,tmptablename=tmpTableName))
             logging.info("Inserted {} rows.".format(cur.rowcount))
         else:
-            logging.error("Datafile ({}) not found or not readable, creating empty database\n".format(args.histfile))
+            logging.error("Datafile ({}) not found or not readable, creating empty database".format(args.histfile))
     # Finished doing db init and loading
     con.close()
     logging.info('Done initialising database')
   
 # Setup to gracefully catch ^C and exit
 def signal_handler(signal, frame):
+    logging.info('Got SIGINT - Cleaning up')
     rt.stop()
     df.close()
-    logging.debug("current raw readings: {:s}",rawReadings)
-    logging.debug("Current average: {}",average)
+    logging.debug("   current raw readings: {}".format(rawReadings))
+    logging.debug("   Current average: {}".format(average))
     for s in inputs:
         s.close()
     for s in outputs:
         s.close()
 
-    logging.info('Got SIGINT - Exiting')
+    logging.info('   Exiting')
     sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -152,20 +176,22 @@ class RepeatedTimer(object):
 
     def stop(self):
         self._timer.cancel()
+#        self.con.close()
         self.is_running = False
 
 # Initialise the raw readings array and initial average value
 rawReadings = [] 
 average = 0
+sampleTime = ''
 
 # Emit the current datetime and sample average
 last_df_write = ""
-def emit(rawReadings):
+def emit(rawReadings,last_df_write):
     logging.debug('Emitting current data to db')
     average = math.fsum(rawReadings)/len(rawReadings)
     sampleTime = str(datetime.datetime.now())
     last_df_write = "{},{:.4f},{}\n".format(sampleTime,average,args.adcchannel)
-    df.write(last_df_write) 
+    df.write(last_df_write)
     with rt.con:
         cur = rt.con.cursor()
         sqlScript = "INSERT INTO {}(DateTime, Voltage, AdcChannel) VALUES ('{}', {:.4f}, {});".format(tableName,sampleTime,average,args.adcchannel)
@@ -181,7 +207,7 @@ except:
   
 # Save current average reading to database once per period
 logging.info('Initialising emit timer at {:d} seconds'.format(args.period))
-rt = RepeatedTimer(args.period, emit, rawReadings)
+rt = RepeatedTimer(args.period, emit, rawReadings, last_df_write)
 
 # Create a TCP/IP sockets, on efor main server, one for debug server
 debug_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -195,8 +221,9 @@ logging.info('starting up debug server on {} port {}'.format(*server_debug_addre
 try:
     debug_server.bind(server_debug_address)
 except socket.error:
-    logging.error('Failed to bind to debug socket - Quitting')
     df.close()
+    rt.stop()
+    logging.error('Failed to bind to debug socket - Quitting')
     sys.exit(1)
 
 # Bind the socket to the port
@@ -205,8 +232,10 @@ logging.info('starting up main server on {} port {}'.format(*server_main_address
 try:
     main_server.bind(server_main_address)
 except socket.error:
-    logging.error('Failed to bind to main socket - Quitting')
     df.close()
+    rt.stop()
+    debug_server.close()
+    logging.error('Failed to bind to main socket - Quitting')
     sys.exit(1)
 
 # Listen for incoming connections on the two ports
@@ -248,7 +277,7 @@ try:
         # If we have more than zero readings, calculate average and update output string
         if len(rawReadings) > 0 : 
             average = math.fsum(rawReadings)/len(rawReadings)
-            last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
+#            last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
             logging.debug("{:.4f},{:.4f}".format(v,average))
 
         # Handle feeding data to debug_outputs
@@ -305,13 +334,19 @@ try:
                 if s is main_server:
                     # A "readable" main_server socket is ready to accept a connection
                     connection, client_address = s.accept()
-                    logging.debug('main server new connection from {}:{}'.format(*client_address))
+                    logging.info('main server new connection from {}:{}'.format(*client_address))
                     connection.setblocking(0)
 
                     # Give the connection a queue for data we want to send
                     message_queues[connection] = Queue.Queue()
             	    # Immediately put last record into send buffor for sending to this connection
+                    con = sqlite3.connect(args.dbname)
+                    cur = con.cursor()
+                    cur.execute('select * from adcpiv2 where rowid = (select seq from sqlite_sequence where name="adcpiv2");')
+                    last_df_write = ",".join(str(i) for i in cur.fetchone())
+                    logging.debug("Last db entry was {}".format(last_df_write))
                     message_queues[connection].put(last_df_write)
+                    con.close()
             	    # Add this connection to the list of outputs to service
             	    outputs.append(connection)
             	    # Add this connection to the list of one-message-only outputs to service
@@ -335,17 +370,16 @@ try:
             else:
                 try:
                     pn = s.getpeername()
-                    logging.debug('sending "{}" to {}:{}'.format(next_msg, *pn))
                     s.send(next_msg)
-	           # If this is a once only connection, remove from output lists and close
+                    logging.debug('sent "{}" to {}:{}'.format(next_msg, *pn))
+ 	           # If this is a once only connection, remove from output lists and close
                     if s in main_outputs:
                         sn = s.getsockname()
                         logging.debug('closing main_server socket connection on port {}:{}'.format(*sn))
                         outputs.remove(s)
                         main_outputs.remove(s)
                         s.close()
-                except:
-#gotta figure this bit out - why am I getting this path executed?
+                except socket.error:
                     sn = s.getsockname()
                     logging.info('Connection reset by peer: {}:{}'.format(*sn))
                     if s in inputs:
