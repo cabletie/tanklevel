@@ -128,14 +128,7 @@ if args.init:
             DROP TABLE IF EXISTS {tablename};
             DROP TABLE IF EXISTS {tmptablename};
             CREATE TABLE IF NOT EXISTS {tablename}(Id INTEGER PRIMARY KEY AUTOINCREMENT, DateTime CHAR(32), 
-        Ch8Channel INTEGER, Ch8Voltage FLOAT, Ch8Value FLOAT, Ch8Units CHAR(32), Ch8Name CHAR(32), Ch8Zero FLOAT, Ch8Span FLOAT,
-        Ch7Channel INTEGER, Ch7Voltage FLOAT, Ch7Value FLOAT, Ch7Units CHAR(32), Ch7Name CHAR(32), Ch7Zero FLOAT, Ch7Span FLOAT,
-        Ch6Channel INTEGER, Ch6Voltage FLOAT, Ch6Value FLOAT, Ch6Units CHAR(32), Ch6Name CHAR(32), Ch6Zero FLOAT, Ch6Span FLOAT,
-        Ch5Channel INTEGER, Ch5Voltage FLOAT, Ch5Value FLOAT, Ch5Units CHAR(32), Ch5Name CHAR(32), Ch5Zero FLOAT, Ch5Span FLOAT,
-        Ch4Channel INTEGER, Ch4Voltage FLOAT, Ch4Value FLOAT, Ch4Units CHAR(32), Ch4Name CHAR(32), Ch4Zero FLOAT, Ch4Span FLOAT,
-        Ch3Channel INTEGER, Ch3Voltage FLOAT, Ch3Value FLOAT, Ch3Units CHAR(32), Ch3Name CHAR(32), Ch3Zero FLOAT, Ch3Span FLOAT,
-        Ch2Channel INTEGER, Ch2Voltage FLOAT, Ch2Value FLOAT, Ch2Units CHAR(32), Ch2Name CHAR(32), Ch2Zero FLOAT, Ch2Span FLOAT,
-        Ch1Channel INTEGER, Ch1Voltage FLOAT, Ch1Value FLOAT, Ch1Units CHAR(32), Ch1Name CHAR(32), Ch1Zero FLOAT, Ch1Span FLOAT
+            Ch8Channel INTEGER, Ch8Value FLOAT, Ch8Units CHAR(32), Ch8Name CHAR(32), Ch8Voltage FLOAT, Ch8Zero FLOAT, Ch8Span FLOAT, Ch8Scale FLOAT
         );
             CREATE TABLE IF NOT EXISTS {tmptablename}(DateTime CHAR(32), Voltage FLOAT,AdcChannel INT);
             """.format(tablename=tableName,tmptablename=tmpTableName)
@@ -149,8 +142,8 @@ if args.init:
                 #print >> sys.stderr, to_db
                 cur.execute("INSERT INTO {tmptablename}(DateTime, Voltage, AdcChannel) VALUES (?, ?, ?);".format(tmptablename=tmpTableName), to_db)
                 # Insert the whole tmpTable into the real table, this time allowing sqlite3 to add the AUTOINCREMENT Id field
-                sqlScript = "INSERT INTO {tablename}(DateTime, Ch8Channel, Ch8Voltage, Ch8Value, Ch8Units, Ch8Name, Ch8Zero, Ch8Span) \
-                    SELECT DateTime, 8, Voltage,(Voltage-{zero})*{scale},{units},{name},{zero},{span}) \
+                sqlScript = "INSERT INTO {tablename}(DateTime, Ch8Channel, Ch8Value, Ch8Units, Ch8Name, Ch8Voltage, Ch8Zero, Ch8Span, Ch8Scale) \
+                    SELECT DateTime, 8, (Voltage-{zero})*{scale},'{units}','{name}', Voltage,'{zero}','{span}','{scale}' \
                     FROM {tmptablename};".format(
                         tablename=tableName,
                         tmptablename=tmpTableName,
@@ -233,10 +226,23 @@ def emit(rawReadings,last_df_write):
     average = math.fsum(rawReadings)/len(rawReadings)
     sampleTime = str(datetime.datetime.now())
     last_df_write = "{},{:.4f},{}\n".format(sampleTime,average,args.adcchannel)
+    last_df_write = "'{datetime}', '{channel}', '{value:.4f}', '{units}','{name}','{voltage:.4f}','{zero}','{span}','{scale:.4f}'".format(
+            datetime=sampleTime,
+            channel=config['ch8']['Address'],
+            value=(average-float(config['ch8']['Zero']))*float(config['ch8']['Scale']),
+            units=config['ch8']['Units'],
+            name=config['ch8']['Name'],
+            voltage=average,
+            zero=config['ch8']['Zero'],
+            span=config['ch8']['Span'],
+            scale=float(config['ch8']['Scale']))
     df.write(last_df_write)
     with rt.con:
         cur = rt.con.cursor()
-        sqlScript = "INSERT INTO {}(DateTime, Voltage, AdcChannel) VALUES ('{}', {:.4f}, {});".format(tableName,sampleTime,average,args.adcchannel)
+        # Id INTEGER PRIMARY KEY AUTOINCREMENT, DateTime CHAR(32), 
+        # Ch8Channel INTEGER, Ch8Value FLOAT, Ch8Units CHAR(32), Ch8Name CHAR(32), Ch8Voltage FLOAT, Ch8Zero FLOAT, Ch8Span FLOAT, Ch8Scale FLOAT
+        sqlScript = "INSERT INTO {tablename}(DateTime,Ch8Channel, Ch8Value , Ch8Units, Ch8Name, Ch8Voltage, Ch8Zero , Ch8Span , Ch8Scale ) \
+            VALUES ({datarow})".format(tablename=tableName,datarow=last_df_write)
         logging.debug("Executing SQL: {}".format(sqlScript))
         cur.execute(sqlScript)
 #    print >> sys.stderr, "Wrote {},{},{} to database\n".format(sampleTime,average,args.adcchannel)
@@ -265,7 +271,7 @@ try:
 except socket.error:
     df.close()
     rt.stop()
-    logging.error('Failed to bind to debug socket - Quitting')
+    logging.error('Failed to bind to debug port {}:{} - Quitting'.format(*server_debug_address))
     sys.exit(1)
 
 # Bind the socket to the port
@@ -277,7 +283,7 @@ except socket.error:
     df.close()
     rt.stop()
     debug_server.close()
-    logging.error('Failed to bind to main socket - Quitting')
+    logging.error('Failed to bind to main port {}:{} - Quitting'.format(*server_main_address))
     sys.exit(1)
 
 # Listen for incoming connections on the two ports
@@ -368,7 +374,7 @@ try:
                 connection.setblocking(0)
 
                 # Give the connection a queue for data we want to send
-                message_queues[connection] = Queue.Queue()
+                message_queues[connection] = queue.Queue()
 
                 # Add this connection queue to the list of outputs to service
                 outputs.append(connection)
@@ -380,7 +386,7 @@ try:
                     connection.setblocking(0)
 
                     # Give the connection a queue for data we want to send
-                    message_queues[connection] = Queue.Queue()
+                    message_queues[connection] = queue.Queue()
                     # Immediately put last record into send buffor for sending to this connection
                     con = sqlite3.connect(args.dbname)
                     cur = con.cursor()
@@ -403,7 +409,7 @@ try:
         for s in writable:
             try:
                 next_msg = message_queues[s].get_nowait()
-            except Queue.Empty:
+            except queue.Empty:
                 pn = s.getpeername()
                 logging.info('output queue for {}:{} is empty'.format(*pn))
                 # No messages waiting so stop checking for writability.
@@ -412,7 +418,7 @@ try:
             else:
                 try:
                     pn = s.getpeername()
-                    s.send(next_msg)
+                    s.send(bytes(next_msg,'UTF-8'))
                     logging.debug('sent "{}" to {}:{}'.format(next_msg, *pn))
                # If this is a once only connection, remove from output lists and close
                     if s in main_outputs:
