@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 import datetime
 import time
@@ -11,12 +11,13 @@ import sqlite3
 import select
 import socket
 from random import random, uniform
-import Queue
+import queue
 import os
 import csv
 import logging
 import configparser
 
+# Get the IP address from the current network interface
 if os.name != "nt":
     import fcntl
     import struct
@@ -42,55 +43,73 @@ def get_lan_ip():
 
 # Parse arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("-d", "--debug", help="Turn on debugging to stderr", action="store_true")
+parser.add_argument("-V", "--debug", help="Turn on debugging to stderr", action="store_true")
 parser.add_argument("-l", "--loglevel", help="Set logging level DEBUG,INFO,WARNING,ERROR,CRITICAL", 
     default='INFO', choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'])
 parser.add_argument("-e", "--logfile", help="File to log system messages", default="adcpiv2.log")
 parser.add_argument("-p", "--period", help="Time period  between when average readings are emitted (seconds)", 
     type=int, default=300)
 parser.add_argument("-n", "--nsamples", help="Number of samples to average over", type=int, default=60)
-parser.add_argument("-h", "--adcchannel", help="ADC Channel", type=int, default=8)
-parser.add_argument("-f", "--datafile", help="csv file to log data to", default="adcpiv2.csv")
-parser.add_argument("-s", "--histfile", help="existing csv file with history data to load", default="adcpiv2.csv")
+parser.add_argument("-c", "--adcchannel", help="ADC Channel", type=int, default=8)
+parser.add_argument("-d", "--datafile", help="csv file to log data to", default="adcpiv2.csv")
+parser.add_argument("-s", "--histfile", help="existing csv file with history data to load")
 parser.add_argument("-b", "--dbname", help="sqlite3 database file to log data to", default="adcpiv2.db")
 parser.add_argument("-i", "--init", help="initialise sqlite3 database", action="store_true")
 parser.add_argument("-t", "--test", help="Run in test mode - uses random data", action="store_true")
 parser.add_argument("-g", "--debugport", help="Port to provide debug output (every reading)", type=int, default=10001)
 parser.add_argument("-o", "--port", help="Port to provide main output (gives latest reading and disconnects)", 
     type=int, default=10000)
-parser.add_argument("-a", "--bindaddress", help="IP Address to bind to", default=get_lan_ip())
-parser.add_argument("-c", "--config", help="Use this config file", default='tanklevel.ini')
+parser.add_argument("-a", "--bindaddress", help="IP Address to bind to", default='0.0.0.0')
+#parser.add_argument("-a", "--bindaddress", help="IP Address to bind to", default=get_lan_ip())
+parser.add_argument("-f", "--config", help="Use this config file", default='tanklevel.ini')
 
 args = parser.parse_args()
 
-# Parse Config file
-channelZero = {}
-channelNames = {}
-
-def isChannelSection(sectionName):
-    return re.match('ch\d',sectionName)
-
-config = ConfigParser.ConfigParser()
-logging.info('Reading config file: {}'.format(args.config))
-try:
-    config.read(args.config)
-    #    channels = [i for i in config.sections() if re.match('ch\d',i)]
-    for s in filter(isChannelSection,config.sections()):
-        channelZero[s] = c.get(s,'Zero')
-        channelNames[s] = c.get(s,'Name')
-except:
-    logging.error('Error reading config file: {}'.format(args.config))
-
-
+# Start logging
 numeric_level = getattr(logging, args.loglevel.upper(), None)
 if not isinstance(numeric_level, int):
     raise ValueError('Invalid log level: %s' % loglevel)
 
 logging.basicConfig(filename=args.logfile,
-    format='%(asctime)s %(filename)s %(process)s %(levelname)s %(message)s',
-    level=numeric_level)
+                    format='%(asctime)s %(filename)s %(process)s %(levelname)s %(message)s',
+                    level=numeric_level)
 
 logging.info('Starting')
+
+# Parse Config file
+# Example config section:
+#[ch7]
+#name = Vcc
+#address = 7
+#zero = 0
+#span = 5
+#scale = 1
+#units = Volts
+
+# channelZero = {}
+# channelNames = {}
+# channelConfig = {}
+
+def isChannelSection(sectionName):
+    return re.match('ch\d',sectionName)
+
+config = configparser.ConfigParser()
+logging.info('Reading config file: {}'.format(args.config))
+try:
+    config.read(args.config)
+    logging.debug(config.sections())
+    # for s in filter(isChannelSection,config.sections()):
+    #     channelConfig[s] = {}
+    #     channelConfig[s]['Zero'] = c.get(s,'Zero')
+    #     channelConfig[s]['Name'] = c.get(s,'Name')
+    #     channelConfig[s]['Address'] = c.get(s,'Address')
+    #     channelConfig[s]['Span'] = c.get(s,'Span')
+    #     channelConfig[s]['Scale'] = c.get(s,'Scale')
+    #     channelConfig[s]['Units'] = c.get(s,'Units')
+except:
+    logging.error('Error reading config file: {}'.format(args.config))
+    sys.exit(1)
+
 
 tableName = "adcpiv2"
 tmpTableName = "tmptable"
@@ -108,21 +127,44 @@ if args.init:
         sqlScript = """
             DROP TABLE IF EXISTS {tablename};
             DROP TABLE IF EXISTS {tmptablename};
-            CREATE TABLE IF NOT EXISTS {tablename}(Id INTEGER PRIMARY KEY AUTOINCREMENT, DateTime CHAR(32), Voltage FLOAT,AdcChannel INT);
+            CREATE TABLE IF NOT EXISTS {tablename}(Id INTEGER PRIMARY KEY AUTOINCREMENT, DateTime CHAR(32), 
+        Ch8Channel INTEGER, Ch8Voltage FLOAT, Ch8Value FLOAT, Ch8Units CHAR(32), Ch8Name CHAR(32), Ch8Zero FLOAT, Ch8Span FLOAT,
+        Ch7Channel INTEGER, Ch7Voltage FLOAT, Ch7Value FLOAT, Ch7Units CHAR(32), Ch7Name CHAR(32), Ch7Zero FLOAT, Ch7Span FLOAT,
+        Ch6Channel INTEGER, Ch6Voltage FLOAT, Ch6Value FLOAT, Ch6Units CHAR(32), Ch6Name CHAR(32), Ch6Zero FLOAT, Ch6Span FLOAT,
+        Ch5Channel INTEGER, Ch5Voltage FLOAT, Ch5Value FLOAT, Ch5Units CHAR(32), Ch5Name CHAR(32), Ch5Zero FLOAT, Ch5Span FLOAT,
+        Ch4Channel INTEGER, Ch4Voltage FLOAT, Ch4Value FLOAT, Ch4Units CHAR(32), Ch4Name CHAR(32), Ch4Zero FLOAT, Ch4Span FLOAT,
+        Ch3Channel INTEGER, Ch3Voltage FLOAT, Ch3Value FLOAT, Ch3Units CHAR(32), Ch3Name CHAR(32), Ch3Zero FLOAT, Ch3Span FLOAT,
+        Ch2Channel INTEGER, Ch2Voltage FLOAT, Ch2Value FLOAT, Ch2Units CHAR(32), Ch2Name CHAR(32), Ch2Zero FLOAT, Ch2Span FLOAT,
+        Ch1Channel INTEGER, Ch1Voltage FLOAT, Ch1Value FLOAT, Ch1Units CHAR(32), Ch1Name CHAR(32), Ch1Zero FLOAT, Ch1Span FLOAT
+        );
             CREATE TABLE IF NOT EXISTS {tmptablename}(DateTime CHAR(32), Voltage FLOAT,AdcChannel INT);
             """.format(tablename=tableName,tmptablename=tmpTableName)
         cur.executescript(sqlScript)
-        if os.path.isfile(args.datafile) and os.access(args.datafile, os.R_OK):
+        if args.histfile and os.path.isfile(args.histfile) and os.access(args.histfile, os.R_OK):
             # Open and read the csv into the tmpTable
-            reader = csv.reader(open(args.histfile, 'r'), delimiter=',')
+            reader = csv.DictReader(open(args.histfile, 'r'), delimiter=',')
             for row in reader:
-                to_db = [unicode(row[0], "utf8"), unicode(row[1], "utf8"), unicode(row[2], "utf8")]
+                #print >> sys.stderr, row['DateTime']
+                to_db = [row['DateTime'], row['Voltage'], row['Channel']]
+                #print >> sys.stderr, to_db
                 cur.execute("INSERT INTO {tmptablename}(DateTime, Voltage, AdcChannel) VALUES (?, ?, ?);".format(tmptablename=tmpTableName), to_db)
-            # Insert the whole tmpTable into the real table, this time allowing sqlite3 to add the AUTOINCREMENT Id field
-            cur.execute("INSERT INTO {tablename}(DateTime, Voltage, AdcChannel) SELECT * FROM {tmptablename};".format(tablename=tableName,tmptablename=tmpTableName))
+                # Insert the whole tmpTable into the real table, this time allowing sqlite3 to add the AUTOINCREMENT Id field
+                sqlScript = "INSERT INTO {tablename}(DateTime, Ch8Channel, Ch8Voltage, Ch8Value, Ch8Units, Ch8Name, Ch8Zero, Ch8Span) \
+                    SELECT DateTime, 8, Voltage,(Voltage-{zero})*{scale},{units},{name},{zero},{span}) \
+                    FROM {tmptablename};".format(
+                        tablename=tableName,
+                        tmptablename=tmpTableName,
+                        zero=config['ch8']['Zero'],
+                        scale=config['ch8']['Scale'],
+                        units=config['ch8']['Units'],
+                        name=config['ch8']['Name'],
+                        span=config['ch8']['Span']
+                        )
+            logging.debug('Executing {}'.format(sqlScript))
+            cur.execute(sqlScript)
             logging.info("Inserted {} rows.".format(cur.rowcount))
         else:
-            logging.error("Datafile ({}) not found or not readable, creating empty database".format(args.histfile))
+            logging.error("Datafile ({}) not found, not specified or not readable, creating empty database".format(args.histfile))
     # Finished doing db init and loading
     con.close()
     logging.info('Done initialising database')
@@ -339,7 +381,7 @@ try:
 
                     # Give the connection a queue for data we want to send
                     message_queues[connection] = Queue.Queue()
-            	    # Immediately put last record into send buffor for sending to this connection
+                    # Immediately put last record into send buffor for sending to this connection
                     con = sqlite3.connect(args.dbname)
                     cur = con.cursor()
                     cur.execute('select * from adcpiv2 where rowid = (select seq from sqlite_sequence where name="adcpiv2");')
@@ -347,10 +389,10 @@ try:
                     logging.debug("Last db entry was {}".format(last_df_write))
                     message_queues[connection].put(last_df_write)
                     con.close()
-            	    # Add this connection to the list of outputs to service
-            	    outputs.append(connection)
-            	    # Add this connection to the list of one-message-only outputs to service
-            	    main_outputs.append(connection)
+                    # Add this connection to the list of outputs to service
+                    outputs.append(connection)
+                    # Add this connection to the list of one-message-only outputs to service
+                    main_outputs.append(connection)
                 else:
                     data = s.recv(1024)
                     if data:
@@ -372,7 +414,7 @@ try:
                     pn = s.getpeername()
                     s.send(next_msg)
                     logging.debug('sent "{}" to {}:{}'.format(next_msg, *pn))
- 	           # If this is a once only connection, remove from output lists and close
+               # If this is a once only connection, remove from output lists and close
                     if s in main_outputs:
                         sn = s.getsockname()
                         logging.debug('closing main_server socket connection on port {}:{}'.format(*sn))
