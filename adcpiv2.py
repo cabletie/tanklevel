@@ -22,22 +22,21 @@ parser = argparse.ArgumentParser()
 parser.add_argument("-V", "--debug", help="Turn on debugging to stderr", action="store_true")
 parser.add_argument("-l", "--loglevel", help="Set logging level DEBUG,INFO,WARNING,ERROR,CRITICAL", 
     default='INFO', choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'])
-parser.add_argument("-e", "--logfile", help="File to log system messages", default="adcpiv2.log")
+parser.add_argument("-e", "--logfile", help="File to log system messages", default="/var/log/adcpiv2.log")
 parser.add_argument("-p", "--period", help="Time period  between when average readings are emitted (seconds)", 
     type=int, default=300)
 parser.add_argument("-n", "--nsamples", help="Number of samples to average over", type=int, default=60)
 parser.add_argument("-c", "--adcchannel", help="ADC Channel", type=int, default=8)
-parser.add_argument("-d", "--datafile", help="csv file to log data to", default="adcpiv2.csv")
+parser.add_argument("-d", "--datafile", help="csv file to log data to [adcpiv2.csv]", default="/var/local/adcpiv2/adcpiv2.csv")
 parser.add_argument("-s", "--histfile", help="existing csv file with history data to load")
-parser.add_argument("-b", "--dbname", help="sqlite3 database file to log data to", default="adcpiv2.db")
+parser.add_argument("-b", "--dbname", help="sqlite3 database file to log data to", default="/var/local/adcpiv2/adcpiv2.db")
 parser.add_argument("-i", "--init", help="initialise sqlite3 database", action="store_true")
 parser.add_argument("-t", "--test", help="Run in test mode - uses random data", action="store_true")
 parser.add_argument("-g", "--debugport", help="Port to provide debug output (every reading)", type=int, default=10001)
 parser.add_argument("-o", "--port", help="Port to provide main output (gives latest reading and disconnects)", 
     type=int, default=10000)
 parser.add_argument("-a", "--bindaddress", help="IP Address to bind to", default='0.0.0.0')
-#parser.add_argument("-a", "--bindaddress", help="IP Address to bind to", default=get_lan_ip())
-parser.add_argument("-f", "--config", help="Use this config file", default='tanklevel.ini')
+parser.add_argument("-f", "--config", help="Use this config file", default='/etc/local/adcpiv2.conf')
 
 args = parser.parse_args()
 
