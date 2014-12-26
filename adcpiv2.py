@@ -22,10 +22,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument("-V", "--debug", help="Turn on debugging to stderr", action="store_true")
 parser.add_argument("-l", "--loglevel", help="Set logging level DEBUG,INFO,WARNING,ERROR,CRITICAL", 
     default='INFO', choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'])
-parser.add_argument("-e", "--logfile", help="File to log system messages", default="/var/log/adcpiv2.log")
+parser.add_argument("-e", "--logfile", help="File to log system messages", default="/var/log/adcpiv2/adcpiv2.log")
 parser.add_argument("-p", "--period", help="Time period  between when average readings are emitted (seconds)", 
     type=int, default=300)
-parser.add_argument("-n", "--nsamples", help="Number of samples to average over", type=int, default=60)
+parser.add_argument("-n", "--nsamples", help="Number of samples to average over", type=int, default=10)
 parser.add_argument("-c", "--adcchannel", help="ADC Channel", type=int, default=8)
 parser.add_argument("-d", "--datafile", help="csv file to log data to [adcpiv2.csv]", default="/var/local/adcpiv2/adcpiv2.csv")
 parser.add_argument("-s", "--histfile", help="existing csv file with history data to load")
@@ -37,6 +37,7 @@ parser.add_argument("-o", "--port", help="Port to provide main output (gives lat
     type=int, default=10000)
 parser.add_argument("-a", "--bindaddress", help="IP Address to bind to", default='0.0.0.0')
 parser.add_argument("-f", "--config", help="Use this config file", default='/etc/local/adcpiv2.conf')
+parser.add_argument("-m", "--daemon", help="Run in daemon mode (background)", action="store_true")
 
 args = parser.parse_args()
 
@@ -45,9 +46,16 @@ numeric_level = getattr(logging, args.loglevel.upper(), None)
 if not isinstance(numeric_level, int):
     raise ValueError('Invalid log level: %s' % loglevel)
 
+logFormatter = logging.Formatter('%(asctime)s %(filename)s %(process)s %(levelname)s %(message)s')
+
 logging.basicConfig(filename=args.logfile,
                     format='%(asctime)s %(filename)s %(process)s %(levelname)s %(message)s',
                     level=numeric_level)
+if(args.debug):
+    # Add logging to stderr if --debug specified
+    consoleHandler = logging.StreamHandler()
+    #consoleHandler.setFormatter(logFormatter)
+    logging.getLogger().addHandler(consoleHandler)
 
 logging.info('Starting')
 
@@ -92,7 +100,18 @@ tmpTableName = "tmptable"
 
 con = sqlite3.connect(args.dbname)
 
-# If we've been asked to initialise database
+# Always try to create tables if they're not there yet
+with con:
+    cur = con.cursor()
+    sqlScript = """
+        CREATE TABLE IF NOT EXISTS {tablename}(Id INTEGER PRIMARY KEY AUTOINCREMENT, DateTime CHAR(32), 
+        Ch8Channel INTEGER, Ch8Value FLOAT, Ch8Units CHAR(32), Ch8Name CHAR(32), Ch8Voltage FLOAT, Ch8Zero FLOAT, Ch8Span FLOAT, Ch8Scale FLOAT
+    );
+        CREATE TABLE IF NOT EXISTS {tmptablename}(DateTime CHAR(32), Voltage FLOAT,AdcChannel INT);
+        """.format(tablename=tableName,tmptablename=tmpTableName)
+    cur.executescript(sqlScript)
+
+# If we've been asked to initialise database, drop tables and load from csv file
 if args.init:
     logging.info('Initialising db') 
     with con:
@@ -140,10 +159,13 @@ if args.init:
 # Setup to gracefully catch ^C and exit
 def signal_handler(signal, frame):
     logging.info('Got SIGINT - Cleaning up')
+    # Stop the sample timer
     rt.stop()
+    # Close the raw data file
     df.close()
     logging.debug("   current raw readings: {}".format(rawReadings))
     logging.debug("   Current average: {}".format(average))
+    # Close the TCP sockets
     for s in inputs:
         s.close()
     for s in outputs:
@@ -154,7 +176,8 @@ def signal_handler(signal, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 
-sys.path.append('../ABElectronics_Python_Libraries/ABElectronics_ADCPi')
+# Hardcode where we expect the ABElectronics library to be
+sys.path.append('/usr/local/lib/ABElectronics_Python_Libraries/ABElectronics_ADCPi')
 from ABElectronics_ADCPi import ADCPi
 
 # Initialise the ADC device using the default addresses and sample rate, change this value if you have changed the address selection jumpers
@@ -277,6 +300,10 @@ main_outputs = [ ]
 # Outgoing message queues (socket:Queue)
 message_queues = {}
 
+# Flag to know if we've emitted the first averaged readng we get or not
+# This is so that we always send a value to db and datafile as soon as we can after startup
+doneFirstEmit = False
+
 logging.debug('Starting main loop')
 
 try:
@@ -308,13 +335,16 @@ try:
             for s in outputs:
                 message_queues[s].put("{:.4f},{:.4f}\n".format(v,average))
 
-#         # Write out the first data point we get
-#         if len(rawReadings) == 1:
-# #### Might neeed to change this to grab most recent db entry and send that instead
-#             # Generate the string so we can use to send to TCP ports if/when needed
-#             last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
-#             # Write out to datafile
-#             df.write(last_df_write)
+        # Write out the first averaged data point we get to the db
+        if (len(rawReadings) == args.nsamples and not doneFirstEmit):
+            # Flag that we've sent the first evraged sample now
+            doneFirstEmit = True
+            # Generate the string so we can use to send to TCP ports if/when needed
+            last_df_write = "{},{:.4f},{}\n".format(str(datetime.datetime.now()),average,args.adcchannel)
+            # Write out to datafile
+            logging.debug("Writing first averaged sample since startup: {}".format(last_df_write))
+            emit(rawReadings,last_df_write)
+            df.write(last_df_write)
 
         # Wait for at least one of the sockets to be ready for processing
         # or timeout of 1 second
@@ -357,7 +387,7 @@ try:
                 if s is main_server:
                     # A "readable" main_server socket is ready to accept a connection
                     connection, client_address = s.accept()
-                    logging.info('main server new connection from {}:{}'.format(*client_address))
+                    logging.debug('main server new connection from {}:{}'.format(*client_address))
                     connection.setblocking(0)
 
                     # Give the connection a queue for data we want to send
@@ -366,7 +396,10 @@ try:
                     con = sqlite3.connect(args.dbname)
                     cur = con.cursor()
                     cur.execute('select * from adcpiv2 where rowid = (select seq from sqlite_sequence where name="adcpiv2");')
-                    last_df_write = ",".join(str(i) for i in cur.fetchone())
+                    try:
+                        last_df_write = ",".join(str(i) for i in cur.fetchone())
+                    except:
+                        last_df_write = "No data"
                     logging.debug("Last db entry was {}".format(last_df_write))
                     message_queues[connection].put(last_df_write)
                     con.close()
