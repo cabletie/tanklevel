@@ -30,6 +30,7 @@ parser.add_argument("-c", "--adcchannel", help="ADC Channel", type=int, default=
 parser.add_argument("-d", "--datafile", help="csv file to log data to [adcpiv2.csv]", default="/var/local/adcpiv2/adcpiv2.csv")
 parser.add_argument("-s", "--histfile", help="existing csv file with history data to load")
 parser.add_argument("-b", "--dbname", help="sqlite3 database file to log data to", default="/var/local/adcpiv2/adcpiv2.db")
+parser.add_argument("-q", "--initq", help="initialise sqlite3 database then quit", action="store_true")
 parser.add_argument("-i", "--init", help="initialise sqlite3 database", action="store_true")
 parser.add_argument("-t", "--test", help="Run in test mode - uses random data", action="store_true")
 parser.add_argument("-g", "--debugport", help="Port to provide debug output (every reading)", type=int, default=10001)
@@ -112,7 +113,7 @@ with con:
     cur.executescript(sqlScript)
 
 # If we've been asked to initialise database, drop tables and load from csv file
-if args.init:
+if args.init | args.initq:
     logging.info('Initialising db') 
     with con:
         cur = con.cursor()
@@ -155,6 +156,10 @@ if args.init:
     # Finished doing db init and loading
     con.close()
     logging.info('Done initialising database')
+    # Exit if we were asked to init and quit (--initq)
+    if args.initq:
+        logging.info('    exiting - initq specified')
+        sys.exit(0)
   
 # Setup to gracefully catch ^C and exit
 def signal_handler(signal, frame):
