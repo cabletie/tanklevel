@@ -8,5 +8,6 @@ install: adcpiv2.py Makefile adcpiv2.conf adcpiv2-monit.sh adcpiv2-init.sh
 	install --compare --verbose -m775 -o root -g root --directory /var/local/adcpiv2
 	install --compare --verbose -m775 -o root -g root --directory /var/log/adcpiv2
 	cp -r ../ABElectronics_Python_Libraries /usr/local/lib/
+	update-rc.d adcpiv2 defaults
 
 .PHONY: install
