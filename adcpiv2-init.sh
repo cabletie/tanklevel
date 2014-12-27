@@ -10,55 +10,34 @@
 # Description:       Controls adcpiv2 ADC logging voltages to database and TCP service
 ### END INIT INFO
 
+# Author: Peter Westley <vk3dxd@gmail.com>
+#
+
+# Do NOT "set -e"
+
+# PATH should only include /usr/* if it runs after the mountnfs.sh script
 PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/bin
-LOGFILE=/var/log/adcpiv2/adcpiv2.log
-DAEMON_ARGS="--logfile $LOGFILE"
 DESC="ADCPiV2 Datalogger"
-NODEUSER=root:root
-LOCAL_VAR_RUN=/var/run
-NAME=adcpiv2.py
+NAME=adcpiv2
 DAEMON=/usr/local/bin/$NAME
-CONFIGFILE=/etc/local/adcpiv2.conf
-
-if [ $UID -ne "0" ]; then
-        echo "You must run this script as root"
-        exit 1
-fi
-
-
-NCMD="exec $DAEMON $DAEMON_ARGS  2>&1"
-
-if [ ! -e "$LOGFILE" ]; then
-        touch "$LOGFILE"
-        chown $NODEUSER "$LOGFILE"
-fi
-
-[ $UID -eq "0" ] && LOCAL_VAR_RUN=/var/run # in case this script is run by root, override user setting
-THIS_ARG=$0
-INIT_SCRIPT_NAME=`basename $THIS_ARG`
-[ -h $THIS_ARG ] && INIT_SCRIPT_NAME=`basename $(readlink $THIS_ARG)` # in case of symlink
-INIT_SCRIPT_NAME_NOEXT=${INIT_SCRIPT_NAME%.*}                            
-PIDFILE="$LOCAL_VAR_RUN/$INIT_SCRIPT_NAME_NOEXT.pid"
-SCRIPTNAME=/etc/init.d/$INIT_SCRIPT_NAME
+DAEMON_ARGS=""
+PIDFILE=/var/run/$NAME.pid
+SCRIPTNAME=/etc/init.d/$NAME
+VERBOSE=yes
 
 # Exit if the package is not installed
-[ -x "$DAEMON" ] ||  { echo "can't find adcpiv2.py ($DAEMON)"  >&2; exit 0; }
-
-# Exit if the 'run' folder is not present
-[ -d "$LOCAL_VAR_RUN" ] || { echo "Directory $LOCAL_VAR_RUN does not exist. Modify the '$INIT_SCRIPT_NAME_NOEXT' init.d script ($THIS_ARG) accordingly" >&2; exit 0; }
+[ -x "$DAEMON" ] || exit 0
 
 # Read configuration variable file if it is present
-#[ -r $NBENV ] && . $NBENV
+[ -r /etc/default/$NAME ] && . /etc/default/$NAME
 
 # Load the VERBOSE setting and other rcS variables
 . /lib/init/vars.sh
 
 # Define LSB log_* functions.
-# Depend on lsb-base (>= 3.0-6) to ensure that this file is present.
+# Depend on lsb-base (>= 3.2-14) to ensure that this file is present
+# and status_of_proc is working.
 . /lib/lsb/init-functions
-
-# uncomment to override system setting
- VERBOSE=yes
 
 #
 # Function that starts the daemon/service
@@ -69,15 +48,15 @@ do_start()
 	#   0 if daemon has been started
 	#   1 if daemon was already running
 	#   2 if daemon could not be started
-	start-stop-daemon --start --quiet --pidfile $PIDFILE --chuid $NODEUSER --background --exec $DAEMON --test > /dev/null \
-		|| { [ "$VERBOSE" != no ] && log_daemon_msg  "  --->  Daemon already running $DESC" "$INIT_SCRIPT_NAME_NOEXT"; return 1; }
-	start-stop-daemon --start --quiet --chuid $NODEUSER --make-pidfile --pidfile $PIDFILE --background --exec $DAEMON --startas /bin/sh -- -c "$NCMD" \
-		|| { [ "$VERBOSE" != no ] && log_daemon_msg  "  --->  could not be start $DESC" "$INIT_SCRIPT_NAME_NOEXT"; return 2; }
+	start-stop-daemon --start --pidfile $PIDFILE --exec $DAEMON --test > /dev/null \
+		|| return 1
+	start-stop-daemon --start --pidfile $PIDFILE --background --exec $DAEMON -- \
+		$DAEMON_ARGS \
+		|| return 2
 	# Add code here, if necessary, that waits for the process to be ready
 	# to handle requests from services started subsequently which depend
 	# on this one.  As a last resort, sleep for some time.
-	[ "$VERBOSE" != no ] && log_daemon_msg  "  --->  started $DESC" "$INIT_SCRIPT_NAME_NOEXT"
-	monit monitor adcpiv2
+	monit monitor $NAME
 }
 
 #
@@ -90,9 +69,8 @@ do_stop()
 	#   1 if daemon was already stopped
 	#   2 if daemon could not be stopped
 	#   other if a failure occurred
-	start-stop-daemon --stop --quiet --retry=TERM/30/KILL/5 --pidfile $PIDFILE  --chuid $NODEUSER --exec $DAEMON
+	start-stop-daemon --stop --quiet --retry=TERM/30/KILL/5 --pidfile $PIDFILE --name $NAME
 	RETVAL="$?"
-	#[ "$VERBOSE" != no ] && [ "$RETVAL" = 1 ] && log_daemon_msg  "  --->  SIGKILL failed => hardkill $DESC" "$INIT_SCRIPT_NAME_NOEXT"
 	[ "$RETVAL" = 2 ] && return 2
 	# Wait for children to finish too if this is a daemon that forks
 	# and if the daemon is only ever run from this initscript.
@@ -100,13 +78,11 @@ do_stop()
 	# that waits for the process to drop all resources that could be
 	# needed by services started subsequently.  A last resort is to
 	# sleep for some time.
-	start-stop-daemon --stop --quiet --oknodo --retry=0/3/KILL/5 --pidfile $PIDFILE  --chuid $NODEUSER --exec $DAEMON -- $DAEMON_ARGS
+	start-stop-daemon --stop --quiet --oknodo --retry=0/30/KILL/5 --exec $DAEMON
 	[ "$?" = 2 ] && return 2
 	# Many daemons don't delete their pidfiles when they exit.
 	rm -f $PIDFILE
-  [ "$VERBOSE" != no ] && [ "$RETVAL" = 1 ] && log_daemon_msg "  --->  $DESC not running" "$INIT_SCRIPT_NAME_NOEXT"
-  [ "$VERBOSE" != no -a "$RETVAL" = 0 ] && log_daemon_msg "  --->  $DESC stopped" "$INIT_SCRIPT_NAME_NOEXT"
-        monit unmonitor adcpiv2
+	monit unmonitor $NAME
 	return "$RETVAL"
 }
 
@@ -119,56 +95,13 @@ do_reload() {
 	# restarting (for example, when it is sent a SIGHUP),
 	# then implement that here.
 	#
-	start-stop-daemon --stop --quiet --signal 1 --pidfile $PIDFILE  --chuid $NODEUSER --name $NAME
+	start-stop-daemon --stop --signal 1 --quiet --pidfile $PIDFILE --name $NAME
 	return 0
 }
 
-#
-# Function that returns the daemon 
-#
-do_status() {
-  #
-  # http://refspecs.freestandards.org/LSB_3.1.1/LSB-Core-generic/LSB-Core-generic/iniscrptact.html
-  # 0 program is running or service is OK
-  # 1 program is dead and /var/run pid file exists
-  # (2 program is dead and /var/lock lock file exists) (not used here)
-  # 3 program is not running
-  # 4 program or service status is unknown
-  RUNNING=$(running)
-  
-  # $PIDFILE corresponds to a live $NAME process
-  ispidactive=$(pidof $NAME | grep `cat $PIDFILE 2>&1` >/dev/null 2>&1)
-  ISPIDACTIVE=$?
-
-  if [ -n "$RUNNING" ]; then
-    if [ $ISPIDACTIVE ]; then 
-      log_success_msg "$INIT_SCRIPT_NAME_NOEXT (launched by $USER) (--chuid $NODEUSER) is running"
-      exit 0      
-    fi
-  else
-    if [ -f $PIDFILE ]; then
-      log_success_msg "$INIT_SCRIPT_NAME_NOEXT (launched by $USER) (--chuid $NODEUSER) is not running, phantom pidfile $PIDFILE"
-      exit 1
-    else
-      log_success_msg "no instance launched by $USER, of $INIT_SCRIPT_NAME_NOEXT (--chuid $NODEUSER) found"
-      exit 3
-    fi
-  fi
-  
-}
-
-running() {
-  RUNSTAT=$(start-stop-daemon --start --quiet --pidfile $PIDFILE --chuid $NODEUSER --background --exec $DAEMON --test > /dev/null)
-  if [ "$?" = 1 ]; then
-    echo y
-  fi
-  
-}
-
-
 case "$1" in
   start)
-	[ "$VERBOSE" != no ] && log_daemon_msg "Starting $DESC" "$INIT_SCRIPT_NAME_NOEXT"
+	[ "$VERBOSE" != no ] && log_daemon_msg "Starting $DESC" "$NAME"
 	do_start
 	case "$?" in
 		0|1) [ "$VERBOSE" != no ] && log_end_msg 0 ;;
@@ -176,12 +109,15 @@ case "$1" in
 	esac
 	;;
   stop)
-	[ "$VERBOSE" != no ] && log_daemon_msg "Stopping $DESC" "$INIT_SCRIPT_NAME_NOEXT"
+	[ "$VERBOSE" != no ] && log_daemon_msg "Stopping $DESC" "$NAME"
 	do_stop
 	case "$?" in
 		0|1) [ "$VERBOSE" != no ] && log_end_msg 0 ;;
 		2) [ "$VERBOSE" != no ] && log_end_msg 1 ;;
 	esac
+	;;
+  status)
+	status_of_proc "$DAEMON" "$NAME" && exit 0 || exit $?
 	;;
   #reload|force-reload)
 	#
@@ -197,7 +133,7 @@ case "$1" in
 	# If the "reload" option is implemented then remove the
 	# 'force-reload' alias
 	#
-	log_daemon_msg "Restarting $DESC" "$INIT_SCRIPT_NAME_NOEXT"
+	log_daemon_msg "Restarting $DESC" "$NAME"
 	do_stop
 	case "$?" in
 	  0|1)
@@ -209,19 +145,16 @@ case "$1" in
 		esac
 		;;
 	  *)
-	  	# Failed to stop
+		# Failed to stop
 		log_end_msg 1
 		;;
 	esac
 	;;
-  status)
-    do_status
-  ;;
   *)
 	#echo "Usage: $SCRIPTNAME {start|stop|restart|reload|force-reload}" >&2
-	echo "Usage: $SCRIPTNAME {start|stop|restart|force-reload}" >&2
+	echo "Usage: $SCRIPTNAME {start|stop|status|restart|force-reload}" >&2
 	exit 3
 	;;
 esac
 
-exit 0
+:
