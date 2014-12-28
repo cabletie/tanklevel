@@ -20,7 +20,8 @@ PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/bin
 DESC="ADCPiV2 Datalogger"
 NAME=adcpiv2
 DAEMON=/usr/local/bin/$NAME
-DAEMON_ARGS=""
+#DAEMON_ARGS=""
+DAEMON_ARGS="--daemon"
 PIDFILE=/var/run/$NAME.pid
 SCRIPTNAME=/etc/init.d/$NAME
 VERBOSE=yes
@@ -50,7 +51,7 @@ do_start()
 	#   2 if daemon could not be started
 	start-stop-daemon --start --pidfile $PIDFILE --exec $DAEMON --test > /dev/null \
 		|| return 1
-	start-stop-daemon --start --pidfile $PIDFILE --background --exec $DAEMON -- \
+	start-stop-daemon --start --pidfile $PIDFILE --exec $DAEMON -- \
 		$DAEMON_ARGS \
 		|| return 2
 	# Add code here, if necessary, that waits for the process to be ready

@@ -16,6 +16,8 @@ import os
 import csv
 import logging
 import configparser
+from pep3143daemon import DaemonContext, PidFile
+
 
 # Parse arguments
 parser = argparse.ArgumentParser()
@@ -42,6 +44,19 @@ parser.add_argument("-m", "--daemon", help="Run in daemon mode (background)", ac
 
 args = parser.parse_args()
 
+if (args.daemon):
+    pid='/var/run/{}.pid'.format(os.path.basename(__file__))
+
+    pidfile = PidFile(pid)
+    daemon = DaemonContext(pidfile=pidfile,detach_process=False,stdout=sys.stdout,stderr=sys.stderr)
+    # we could have written this also as:
+    # daemon.pidfile = pidfile
+    print ('{}: Backgrounding'.format(os.path.basename(__file__)))
+    daemon.open()
+else:
+    print ('{}: Not backgrounding'.format(os.path.basename(__file__)))
+
+print ('{} pid : {}'.format(os.path.basename(__file__),os.getpid()))
 # Start logging
 numeric_level = getattr(logging, args.loglevel.upper(), None)
 if not isinstance(numeric_level, int):
