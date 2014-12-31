@@ -190,6 +190,8 @@ def signal_handler(signal, frame):
         s.close()
     for s in outputs:
         s.close()
+    for s in main_outputs:
+        s.close()
 
     logging.info('   Exiting')
     sys.exit(0)
@@ -278,8 +280,12 @@ rt = RepeatedTimer(args.period, emit, rawReadings, last_df_write)
 # Create a TCP/IP sockets, on efor main server, one for debug server
 debug_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 debug_server.setblocking(0)
+# Try to avoid address already in use problem when program closes and restarts
+# see http://stackoverflow.com/questions/6380057/python-binding-socket-address-already-in-use
+debug_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 main_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 main_server.setblocking(0)
+main_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
 # Bind the socket to the port
 server_debug_address = (args.bindaddress, args.debugport)
@@ -324,7 +330,7 @@ message_queues = {}
 # This is so that we always send a value to db and datafile as soon as we can after startup
 doneFirstEmit = False
 
-logging.debug('Starting main loop')
+logging.info('Starting main loop')
 
 try:
     while inputs:
@@ -465,15 +471,18 @@ try:
                     s.close()
     # end while inputs
     logging.warning('no more input sockets to process - exiting.')
-    
-
+except:
+    logging.error("Unexpected error: {}".format(sys.exc_info()[0]))
+    #raise
 # We got a ^C - close up shop cleanly
 finally:
     logging.info('Cleaning up and Exiting - Bye')
+    rt.stop()
     for s in inputs:
         s.close()
     for s in outputs:
         s.close()
+    for s in main_outputs:
+        s.close()
     df.close()
-    rt.stop()
 
