@@ -35,15 +35,18 @@ parser.add_argument("-b", "--dbname", help="sqlite3 database file to log data to
 parser.add_argument("-q", "--initq", help="initialise sqlite3 database then quit", action="store_true")
 parser.add_argument("-i", "--init", help="initialise sqlite3 database", action="store_true")
 parser.add_argument("-t", "--test", help="Run in test mode - uses random data", action="store_true")
-parser.add_argument("-g", "--debugport", help="Port to provide debug output (every reading)", type=int, default=10001)
+parser.add_argument("-g", "--debugport", help="Port to provide debug output (every reading)", 
+    type=int) # default=12001
 parser.add_argument("-o", "--port", help="Port to provide main output (gives latest reading and disconnects)", 
-    type=int, default=10000)
-parser.add_argument("-a", "--bindaddress", help="IP Address to bind to", default='0.0.0.0')
+    type=int) # default=12000
+parser.add_argument("-a", "--bindaddress", help="IP Address to bind to") # default='0.0.0.0'
 parser.add_argument("-f", "--config", help="Use this config file", default='/etc/local/adcpiv2.conf')
 parser.add_argument("-m", "--daemon", help="Run in daemon mode (background)", action="store_true")
 
+# Go grab all the command line options
 args = parser.parse_args()
 
+# If daemon option was specified, background ourselves immediately
 if (args.daemon):
     pid='/var/run/{}.pid'.format(os.path.basename(__file__))
 
@@ -112,7 +115,6 @@ except:
 
 tableName = "adcpiv2"
 tmpTableName = "tmptable"
-#channelstablename = "channels"
 
 con = sqlite3.connect(args.dbname)
 
@@ -190,6 +192,8 @@ def signal_handler(signal, frame):
         s.close()
     for s in outputs:
         s.close()
+# Not convinvced this is needed - all should be closed by now 
+# because main_outputs is a copy of some outputs
     for s in main_outputs:
         s.close()
 
@@ -202,7 +206,9 @@ signal.signal(signal.SIGINT, signal_handler)
 sys.path.append('/usr/local/lib/ABElectronics_Python_Libraries/ABElectronics_ADCPi')
 from ABElectronics_ADCPi import ADCPi
 
-# Initialise the ADC device using the default addresses and sample rate, change this value if you have changed the address selection jumpers
+# Initialise the ADC device using the default addresses and sample rate, 
+# change this value if you have changed the address selection jumpers
+# Or it should be from options/config file
 # Sample rate can be 12,14, 16 or 18
 adc = ADCPi(0x68, 0x69, 18)
 
@@ -275,6 +281,8 @@ except:
   
 # Save current average reading to database once per period
 logging.info('Initialising emit timer at {:d} seconds'.format(args.period))
+
+# Create a repeating time that grabs current average and emits to db or socket(s)
 rt = RepeatedTimer(args.period, emit, rawReadings, last_df_write)
 
 # Create a TCP/IP sockets, on efor main server, one for debug server
@@ -285,10 +293,33 @@ debug_server.setblocking(0)
 debug_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 main_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 main_server.setblocking(0)
+# Try to avoid address already in use problem when program closes and restarts
+# see http://stackoverflow.com/questions/6380057/python-binding-socket-address-already-in-use
 main_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
 # Bind the socket to the port
-server_debug_address = (args.bindaddress, args.debugport)
+bindaddress = '0.0.0.0'
+debugport = 12001
+port = 12000
+try:
+    bindaddress = args.bindaddress or config['adcpiv2']['bindaddress']
+    logging.error( "bindaddress using: {}".format(bindaddress))
+except:
+    logging.error( "failed bindaddress, using: {}".format(bindaddress))
+ 
+try:
+    debugport = args.debugport or int(config['adcpiv2']['debugport'])
+    logging.error( "debugport using: {}".format(debugport))
+except:
+    logging.error( "failed debugport, using: {}".format(debugport))
+
+try:
+    port = args.port or int(config['adcpiv2']['port'])
+    logging.error( "port using: {}".format(port))
+except:
+    logging.error( "failed port, using: {}".format(port))
+
+server_debug_address = (bindaddress , debugport )
 logging.info('starting up debug server on {} port {}'.format(*server_debug_address))
 try:
     debug_server.bind(server_debug_address)
@@ -298,8 +329,10 @@ except socket.error:
     logging.error('Failed to bind to debug port {}:{} - Quitting'.format(*server_debug_address))
     sys.exit(1)
 
-# Bind the socket to the port
-server_main_address = (args.bindaddress, args.port)
+# Bind the socket to the port, grab port def from options, config file or defaults (in that order)
+
+server_main_address = (bindaddress , port) 
+#server_main_address = (args.bindaddress, args.port)
 logging.info('starting up main server on {} port {}'.format(*server_main_address))
 try:
     main_server.bind(server_main_address)
@@ -485,4 +518,5 @@ finally:
     for s in main_outputs:
         s.close()
     df.close()
+
 
