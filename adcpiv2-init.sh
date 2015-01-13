@@ -83,7 +83,6 @@ do_stop()
 	[ "$?" = 2 ] && return 2
 	# Many daemons don't delete their pidfiles when they exit.
 	rm -f $PIDFILE
-	monit unmonitor $NAME
 	return "$RETVAL"
 }
 
@@ -111,6 +110,15 @@ case "$1" in
 	;;
   stop)
 	[ "$VERBOSE" != no ] && log_daemon_msg "Stopping $DESC" "$NAME"
+	do_stop
+	case "$?" in
+		0|1) [ "$VERBOSE" != no ] && log_end_msg 0 ;;
+		2) [ "$VERBOSE" != no ] && log_end_msg 1 ;;
+	esac
+	;;
+  kill)
+	[ "$VERBOSE" != no ] && log_daemon_msg "Stopping and unmonitoring $DESC" "$NAME"
+	monit unmonitor $NAME
 	do_stop
 	case "$?" in
 		0|1) [ "$VERBOSE" != no ] && log_end_msg 0 ;;

@@ -26,8 +26,8 @@ parser.add_argument("-l", "--loglevel", help="Set logging level DEBUG,INFO,WARNI
     default='INFO', choices=['DEBUG','INFO','WARNING','ERROR','CRITICAL'])
 parser.add_argument("-e", "--logfile", help="File to log system messages", default="/var/log/adcpiv2/adcpiv2.log")
 parser.add_argument("-p", "--period", help="Time period  between when average readings are emitted (seconds)", 
-    type=int, default=300)
-parser.add_argument("-n", "--nsamples", help="Number of samples to average over", type=int, default=10)
+    type=int)
+parser.add_argument("-n", "--nsamples", help="Number of samples to average over", type=int)
 parser.add_argument("-c", "--adcchannel", help="ADC Channel", type=int, default=8)
 parser.add_argument("-d", "--datafile", help="csv file to log data to [adcpiv2.csv]", default="/var/local/adcpiv2/adcpiv2.csv")
 parser.add_argument("-s", "--histfile", help="existing csv file with history data to load")
@@ -270,7 +270,11 @@ def emit(rawReadings,last_df_write):
         sqlScript = "INSERT INTO {tablename}(DateTime,Ch8Channel, Ch8Value , Ch8Units, Ch8Name, Ch8Voltage, Ch8Zero , Ch8Span , Ch8Scale ) \
             VALUES ({datarow})".format(tablename=tableName,datarow=last_df_write)
         logging.debug("Executing SQL: {}".format(sqlScript))
-        cur.execute(sqlScript)
+        try:
+            cur.execute(sqlScript)
+        except sqlite3.Error as e:
+            logging.error("Failed to write reading to database: {}\n".format(e.args[0]))
+	    
 #    print >> sys.stderr, "Wrote {},{},{} to database\n".format(sampleTime,average,args.adcchannel)
 
 try:
@@ -278,12 +282,29 @@ try:
 except:
   logging.error("Failed to open {} for writing",args.datafile)
   sys.exit(1)
-  
+ 
+period = 300
+try:
+    period = args.period or config['adcpiv2']['period']
+    #logging.error( "period using: {}".format(period))
+except:
+    logging.error( "failed period, using: {}".format(period))
+ 
 # Save current average reading to database once per period
-logging.info('Initialising emit timer at {:d} seconds'.format(args.period))
+logging.info('Initialising emit timer at {:d} seconds'.format(period))
+
+nsamples = 20
+try:
+    nsamples = args.nsamples or config['adcpiv2']['nsamples']
+    #logging.error( "nsamples using: {}".format(nsamples))
+except:
+    logging.error( "failed nsamples, using: {}".format(nsamples))
+ 
+# Save current average reading to database once per period
+logging.info('Initialising emit timer at {:d} seconds'.format(period))
 
 # Create a repeating time that grabs current average and emits to db or socket(s)
-rt = RepeatedTimer(args.period, emit, rawReadings, last_df_write)
+rt = RepeatedTimer(period, emit, rawReadings, last_df_write)
 
 # Create a TCP/IP sockets, on efor main server, one for debug server
 debug_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -303,19 +324,19 @@ debugport = 12001
 port = 12000
 try:
     bindaddress = args.bindaddress or config['adcpiv2']['bindaddress']
-    logging.error( "bindaddress using: {}".format(bindaddress))
+    #logging.error( "bindaddress using: {}".format(bindaddress))
 except:
     logging.error( "failed bindaddress, using: {}".format(bindaddress))
  
 try:
     debugport = args.debugport or int(config['adcpiv2']['debugport'])
-    logging.error( "debugport using: {}".format(debugport))
+    #logging.error( "debugport using: {}".format(debugport))
 except:
     logging.error( "failed debugport, using: {}".format(debugport))
 
 try:
     port = args.port or int(config['adcpiv2']['port'])
-    logging.error( "port using: {}".format(port))
+    #logging.error( "port using: {}".format(port))
 except:
     logging.error( "failed port, using: {}".format(port))
 
@@ -377,7 +398,7 @@ try:
             v = adc.readVoltage(args.adcchannel)
 
         # Delet the oldest sample if we have nsamples or more
-        if len(rawReadings) >= args.nsamples:
+        if len(rawReadings) >= nsamples:
             del rawReadings[0]
 
         # Append the newest reading to the array
@@ -395,7 +416,7 @@ try:
                 message_queues[s].put("{:.4f},{:.4f}\n".format(v,average))
 
         # Write out the first averaged data point we get to the db
-        if (len(rawReadings) == args.nsamples and not doneFirstEmit):
+        if (len(rawReadings) == nsamples and not doneFirstEmit):
             # Flag that we've sent the first evraged sample now
             doneFirstEmit = True
             # Generate the string so we can use to send to TCP ports if/when needed
@@ -503,7 +524,7 @@ try:
                         outputs.remove(s)
                     s.close()
     # end while inputs
-    logging.warning('no more input sockets to process - exiting.')
+    logging.warning('no more input sockets to process (this should never happen) - exiting.')
 except:
     logging.error("Unexpected error: {}".format(sys.exc_info()[0]))
     #raise

@@ -4,4 +4,4 @@ with pidfile /var/run/adcpiv2.pid
 start program = "/etc/init.d/adcpiv2 start"
 stop program = "/etc/init.d/adcpiv2 stop"
 
-if failed port 10000 with timeout 20 seconds then restart
+if failed port 12000 with timeout 20 seconds then restart
