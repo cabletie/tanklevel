@@ -245,7 +245,8 @@ rawReadings = []
 average = 0
 sampleTime = ''
 
-# Emit the current datetime and sample average
+# Emit the current datetime and sample average to databse
+# Done asychronously on a timer
 last_df_write = ""
 def emit(rawReadings,last_df_write):
     logging.debug('Emitting current data to db')
@@ -273,7 +274,8 @@ def emit(rawReadings,last_df_write):
         try:
             cur.execute(sqlScript)
         except sqlite3.Error as e:
-            logging.error("Failed to write reading to database: {}\n".format(e.args[0]))
+            logging.error("Failed to write entry to database: {}\n".format(e.args[0]))
+        logging.debug("Completed SQL")
 	    
 #    print >> sys.stderr, "Wrote {},{},{} to database\n".format(sampleTime,average,args.adcchannel)
 
@@ -285,7 +287,7 @@ except:
  
 period = 300
 try:
-    period = args.period or config['adcpiv2']['period']
+    period = args.period or int(config['adcpiv2']['period'])
     #logging.error( "period using: {}".format(period))
 except:
     logging.error( "failed period, using: {}".format(period))
@@ -295,13 +297,13 @@ logging.info('Initialising emit timer at {:d} seconds'.format(period))
 
 nsamples = 20
 try:
-    nsamples = args.nsamples or config['adcpiv2']['nsamples']
+    nsamples = args.nsamples or int(config['adcpiv2']['nsamples'])
     #logging.error( "nsamples using: {}".format(nsamples))
 except:
     logging.error( "failed nsamples, using: {}".format(nsamples))
  
 # Save current average reading to database once per period
-logging.info('Initialising emit timer at {:d} seconds'.format(period))
+logging.info('Initialising emit timer at {:d} seconds'.format(nsamples))
 
 # Create a repeating time that grabs current average and emits to db or socket(s)
 rt = RepeatedTimer(period, emit, rawReadings, last_df_write)
@@ -475,7 +477,10 @@ try:
                     # Immediately put last record into send buffor for sending to this connection
                     con = sqlite3.connect(args.dbname)
                     cur = con.cursor()
-                    cur.execute('select * from adcpiv2 where rowid = (select seq from sqlite_sequence where name="adcpiv2");')
+                    try:
+                        cur.execute('select * from adcpiv2 where rowid = (select seq from sqlite_sequence where name="adcpiv2");')
+                    except sqlite3.Error as e:
+                        logging.error("main_server: Failed to read last row from database: {}\n".format(e.args[0]))
                     try:
                         last_df_write = ",".join(str(i) for i in cur.fetchone())
                     except:
