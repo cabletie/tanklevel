@@ -475,7 +475,7 @@ try:
                     # Give the connection a queue for data we want to send
                     message_queues[connection] = queue.Queue()
                     # Immediately put last record into send buffor for sending to this connection
-                    con = sqlite3.connect(args.dbname)
+                    con = sqlite3.connect(args.dbname,30)
                     cur = con.cursor()
                     try:
                         cur.execute('select * from adcpiv2 where rowid = (select seq from sqlite_sequence where name="adcpiv2");')
