@@ -42,6 +42,8 @@ parser.add_argument("-o", "--port", help="Port to provide main output (gives lat
 parser.add_argument("-a", "--bindaddress", help="IP Address to bind to") # default='0.0.0.0'
 parser.add_argument("-f", "--config", help="Use this config file", default='/etc/local/adcpiv2.conf')
 parser.add_argument("-m", "--daemon", help="Run in daemon mode (background)", action="store_true")
+parser.add_argument("-s", "--graphiteServer", help="Set the graphite server name", action="store_true")
+parser.add_argument("-r", "--graphitePort", help="Set the port to send data to on the graphite server", action="store_true")
 
 # Go grab all the command line options
 args = parser.parse_args()
